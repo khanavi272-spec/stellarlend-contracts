@@ -101,4 +101,5 @@ pub enum CrossAssetError {
     AssetNotSupported = 6007,
     PriceUnavailable = 6008,
     AlreadyInitialized = 6009,
+    ExceedsDepositCap = 6010,
 }

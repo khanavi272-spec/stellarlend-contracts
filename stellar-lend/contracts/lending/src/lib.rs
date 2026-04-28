@@ -15,6 +15,7 @@ mod reentrancy;
 mod token_receiver;
 mod withdraw;
 mod errors;
+mod asset_registry;
 #[cfg(test)]
 mod errors_test;
 
@@ -86,6 +87,8 @@ mod borrow_withdraw_sequence_adversarial_test;
 // cross_asset_test targets a different contract API; disabled until migrated
 // #[cfg(test)]
 // mod cross_asset_test;
+#[cfg(test)]
+mod cross_asset_deposit_cap_test;
 #[cfg(test)]
 mod deposit_test;
 #[cfg(test)]
@@ -995,6 +998,24 @@ impl LendingContract {
         user: Address,
     ) -> Result<PositionSummary, CrossAssetError> {
         cross_position_summary(&env, user)
+    }
+
+    /// Get the deposit cap for a specific asset
+    pub fn get_asset_deposit_cap(env: Env, asset: Address) -> Result<i128, CrossAssetError> {
+        cross_asset::get_asset_deposit_cap(&env, &asset)
+    }
+
+    /// Get the current total deposits for a specific asset
+    pub fn get_asset_total_deposits(env: Env, asset: Address) -> i128 {
+        cross_asset::get_asset_total_deposits(&env, &asset)
+    }
+
+    /// Get the remaining deposit capacity for a specific asset
+    pub fn get_asset_remaining_deposit_capacity(
+        env: Env,
+        asset: Address,
+    ) -> Result<i128, CrossAssetError> {
+        cross_asset::get_asset_remaining_deposit_capacity(&env, &asset)
     }
 }
 
