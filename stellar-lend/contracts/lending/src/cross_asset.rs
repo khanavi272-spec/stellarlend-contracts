@@ -88,6 +88,7 @@ use soroban_sdk::{contracterror, contractevent, contracttype, token, Address, En
 
 use crate::constants::{BPS_SCALE, HEALTH_FACTOR_SCALE};
 use crate::pause::{self, PauseType};
+use crate::validation;
 
 pub use crate::errors::CrossAssetError;
 
@@ -99,6 +100,16 @@ pub struct AssetParamsSetEvent {
     pub ltv: i128,
     pub liquidation_threshold: i128,
     pub debt_ceiling: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct BorrowCapSetEvent {
+    pub asset: Address,
+    pub previous_cap: i128,
+    pub new_cap: i128,
+    pub timestamp: u64,
 }
 
 #[contractevent]
@@ -143,7 +154,11 @@ pub struct AssetParams {
     pub liquidation_threshold: i128, // Liquidation threshold (basis points)
     pub price_feed: Address,         // Oracle address for price
     pub debt_ceiling: i128,          // Maximum debt allowed for this asset
+    pub deposit_cap: i128,           // Maximum deposits allowed for this asset
     pub is_active: bool,
+    /// Maximum total amount of this asset that may be outstanding as debt across all borrowers.
+    /// A value of 0 means uncapped (no limit). Enforced at transaction end to prevent flash-loan bypass.
+    pub borrow_cap: i128,
 }
 
 #[contracttype]
@@ -160,6 +175,7 @@ pub enum CrossAssetDataKey {
     AssetParams(Address),
     UserPosition(Address),
     TotalAssetDebt(Address),
+    TotalAssetDeposits(Address),
     MinBorrowAmount,
     CrossAssetPaused,
     CrossAssetAdmin,
@@ -192,9 +208,60 @@ pub fn set_asset_params(
     params: AssetParams,
 ) -> Result<(), CrossAssetError> {
     check_admin(env)?;
+    
+    validation::assert_bps_range(params.ltv)?;
+    validation::assert_bps_range(params.liquidation_threshold)?;
+    validation::assert_ltv_threshold(params.ltv, params.liquidation_threshold)?;
+    validation::assert_positive(params.debt_ceiling)?;
+
     env.storage()
         .persistent()
         .set(&CrossAssetDataKey::AssetParams(asset), &params);
+    Ok(())
+}
+
+/// Sets the borrow cap for a specific asset.
+///
+/// # Arguments
+/// * `env` - The contract environment.
+/// * `asset` - The address of the asset.
+/// * `cap` - The maximum total borrowed amount for this asset. 0 means uncapped.
+///
+/// # Errors
+/// * `Unauthorized`: If the caller is not the admin.
+/// * `InvalidBorrowCap`: If the cap is negative.
+/// * `AssetNotSupported`: If the asset is not configured.
+///
+/// # Security
+/// * Only the admin can call this function.
+/// * The cap is enforced at transaction end to prevent flash-loan bypass.
+pub fn set_borrow_cap(
+    env: &Env,
+    asset: Address,
+    cap: i128,
+) -> Result<(), CrossAssetError> {
+    check_admin(env)?;
+
+    if cap < 0 {
+        return Err(CrossAssetError::InvalidBorrowCap);
+    }
+
+    let mut params = get_asset_params(env, &asset)?;
+    let previous_cap = params.borrow_cap;
+    params.borrow_cap = cap;
+
+    env.storage()
+        .persistent()
+        .set(&CrossAssetDataKey::AssetParams(asset.clone()), &params);
+
+    BorrowCapSetEvent {
+        asset,
+        previous_cap,
+        new_cap: cap,
+        timestamp: env.ledger().timestamp(),
+    }
+    .publish(env);
+
     Ok(())
 }
 
@@ -210,11 +277,13 @@ pub fn set_asset_params(
 /// * `InvalidAmount`: If the amount is less than or equal to 0.
 /// * `ProtocolPaused`: If deposit operations are paused.
 /// * `AssetNotSupported`: If the asset is not active or not supported.
+/// * `ExceedsDepositCap`: If the deposit would exceed the per-asset deposit cap.
 /// * `Overflow`: If an arithmetic overflow occurs.
 ///
 /// # Security
 /// * The user must authorize the deposit.
 /// * Tokens are transferred from the user to the contract.
+/// * Per-asset deposit caps are enforced to limit protocol exposure.
 pub fn deposit_collateral_asset(
     env: &Env,
     user: Address,
@@ -239,16 +308,27 @@ pub fn deposit_collateral_asset(
         return Err(CrossAssetError::AssetNotSupported);
     }
 
+    // Enforce per-asset deposit cap
+    let total_deposits = get_total_asset_deposits(env, &asset);
+    let new_total_deposits = total_deposits
+        .checked_add(amount)
+        .ok_or(CrossAssetError::Overflow)?;
+    
+    if new_total_deposits > params.deposit_cap {
+        return Err(CrossAssetError::ExceedsDepositCap);
+    }
+
     let mut position = get_user_position(env, &user);
     let current_balance = position.collateral_balances.get(asset.clone()).unwrap_or(0);
     position.collateral_balances.set(
-        asset,
+        asset.clone(),
         current_balance
             .checked_add(amount)
             .ok_or(CrossAssetError::Overflow)?,
     );
 
     save_user_position(env, &user, &position);
+    set_total_asset_deposits(env, &asset, new_total_deposits);
 
     // In a real implementation, we would transfer tokens from user to contract here
     // env.invoke_contract(...)
@@ -269,6 +349,7 @@ pub fn deposit_collateral_asset(
 /// * `ProtocolPaused`: If borrow operations are paused.
 /// * `AssetNotSupported`: If the asset is not active or not supported.
 /// * `DebtCeilingReached`: If the borrow would exceed the asset's debt ceiling.
+/// * `BorrowCapExceeded`: If the borrow would exceed the asset's borrow cap.
 /// * `InsufficientCollateral`: If the user's health factor would drop below 1.0.
 /// * `Overflow`: If an arithmetic overflow occurs.
 ///
@@ -276,6 +357,7 @@ pub fn deposit_collateral_asset(
 /// * The user must authorize the borrow.
 /// * Tokens are transferred from the contract to the user.
 /// * The position health is checked before completing the borrow.
+/// * The borrow cap is enforced before state commitment.
 pub fn borrow_asset(
     env: &Env,
     user: Address,
@@ -307,6 +389,16 @@ pub fn borrow_asset(
         > params.debt_ceiling
     {
         return Err(CrossAssetError::DebtCeilingReached);
+    }
+
+    // Enforce per-asset borrow cap: if cap is set (non-zero), verify total borrowed won't exceed it
+    if params.borrow_cap > 0 {
+        let new_total_debt = total_debt
+            .checked_add(amount)
+            .ok_or(CrossAssetError::Overflow)?;
+        if new_total_debt > params.borrow_cap {
+            return Err(CrossAssetError::BorrowCapExceeded);
+        }
     }
 
     let mut position = get_user_position(env, &user);
@@ -426,6 +518,7 @@ pub fn repay_asset(
 /// * The user must authorize the withdrawal.
 /// * Tokens are transferred from the contract to the user.
 /// * The position health is checked before completing the withdrawal.
+/// * Total asset deposits are decremented to maintain accurate cap tracking.
 pub fn withdraw_asset(
     env: &Env,
     user: Address,
@@ -470,6 +563,16 @@ pub fn withdraw_asset(
     position.collateral_balances = collateral_balances;
     save_user_position(env, &user, &position);
 
+    // Update total asset deposits
+    let total_deposits = get_total_asset_deposits(env, &asset);
+    set_total_asset_deposits(
+        env,
+        &asset,
+        total_deposits
+            .checked_sub(amount)
+            .ok_or(CrossAssetError::Overflow)?,
+    );
+
     // Transfer tokens from contract to user
     // let token_client = token::Client::new(env, &asset);
     // token_client.transfer(&env.current_contract_address(), &user, &amount);
@@ -492,6 +595,61 @@ pub fn get_cross_position_summary(
     calculate_position_summary(env, &position.collateral_balances, &position.debt_balances)
 }
 
+/// Returns the deposit cap for a specific asset.
+///
+/// # Arguments
+/// * `env` - The contract environment.
+/// * `asset` - The address of the asset.
+///
+/// # Returns
+/// The deposit cap for the asset, or an error if the asset is not configured.
+///
+/// # Security
+/// Read-only; no state change.
+pub fn get_asset_deposit_cap(env: &Env, asset: &Address) -> Result<i128, CrossAssetError> {
+    let params = get_asset_params(env, asset)?;
+    Ok(params.deposit_cap)
+}
+
+/// Returns the current total deposits for a specific asset.
+///
+/// # Arguments
+/// * `env` - The contract environment.
+/// * `asset` - The address of the asset.
+///
+/// # Returns
+/// The current total deposits for the asset.
+///
+/// # Security
+/// Read-only; no state change.
+pub fn get_asset_total_deposits(env: &Env, asset: &Address) -> i128 {
+    get_total_asset_deposits(env, asset)
+}
+
+/// Returns the remaining deposit capacity for a specific asset.
+///
+/// # Arguments
+/// * `env` - The contract environment.
+/// * `asset` - The address of the asset.
+///
+/// # Returns
+/// The remaining deposit capacity (cap - current deposits), or an error if the asset is not configured.
+///
+/// # Security
+/// Read-only; no state change.
+pub fn get_asset_remaining_deposit_capacity(
+    env: &Env,
+    asset: &Address,
+) -> Result<i128, CrossAssetError> {
+    let params = get_asset_params(env, asset)?;
+    let total_deposits = get_total_asset_deposits(env, asset);
+    Ok(params
+        .deposit_cap
+        .checked_sub(total_deposits)
+        .unwrap_or(0)
+        .max(0))
+}
+
 // Internal helpers
 
 fn check_admin(env: &Env) -> Result<(), CrossAssetError> {
@@ -509,6 +667,15 @@ fn get_asset_params(env: &Env, asset: &Address) -> Result<AssetParams, CrossAsse
         .persistent()
         .get(&CrossAssetDataKey::AssetParams(asset.clone()))
         .ok_or(CrossAssetError::AssetNotSupported)
+}
+
+/// Internal helper to get asset params for use by other modules (e.g., flash_loan).
+/// Returns None if asset is not configured, allowing graceful degradation.
+pub(crate) fn get_asset_params_internal(env: &Env, asset: &Address) -> Result<AssetParams, ()> {
+    env.storage()
+        .persistent()
+        .get(&CrossAssetDataKey::AssetParams(asset.clone()))
+        .ok_or(())
 }
 
 fn get_user_position(env: &Env, user: &Address) -> UserCrossPosition {
@@ -535,10 +702,31 @@ fn get_total_asset_debt(env: &Env, asset: &Address) -> i128 {
         .unwrap_or(0)
 }
 
+/// Internal helper to get total asset debt for use by other modules (e.g., flash_loan).
+pub(crate) fn get_total_asset_debt_internal(env: &Env, asset: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&CrossAssetDataKey::TotalAssetDebt(asset.clone()))
+        .unwrap_or(0)
+}
+
 fn set_total_asset_debt(env: &Env, asset: &Address, amount: i128) {
     env.storage()
         .persistent()
         .set(&CrossAssetDataKey::TotalAssetDebt(asset.clone()), &amount);
+}
+
+fn get_total_asset_deposits(env: &Env, asset: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&CrossAssetDataKey::TotalAssetDeposits(asset.clone()))
+        .unwrap_or(0)
+}
+
+fn set_total_asset_deposits(env: &Env, asset: &Address, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&CrossAssetDataKey::TotalAssetDeposits(asset.clone()), &amount);
 }
 
 fn calculate_position_summary(

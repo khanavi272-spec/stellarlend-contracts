@@ -82,6 +82,39 @@ pub fn flash_loan(
         return Err(FlashLoanError::Reentrancy);
     }
 
+    // 6. Enforce borrow cap post-loan accounting
+    // This check prevents flash loans from being used to temporarily exceed the cap during
+    // the callback and then repay, leaving the system in a cap-compliant state that was only
+    // transiently non-compliant. By checking after repayment and reentrancy protection, we
+    // ensure the net effect of the flash-loan interaction respects the cap.
+    // Invariant: total borrowed for any capped asset never exceeds the cap at transaction end.
+    enforce_borrow_cap_post_loan(env, &asset)?;
+
+    Ok(())
+}
+
+/// Enforces borrow cap after flash-loan accounting.
+///
+/// Verifies that the net effect of the flash-loan interaction does not cause the asset's
+/// total borrowed to exceed its borrow cap. This is called after repayment and reentrancy
+/// checks to ensure the cap is enforced at transaction end.
+///
+/// # Arguments
+/// * `env` - The contract environment
+/// * `asset` - The asset that was flash-loaned
+///
+/// # Errors
+/// * `FlashLoanError::BorrowCapExceeded`: If the asset's total borrowed exceeds its cap
+fn enforce_borrow_cap_post_loan(env: &Env, asset: &Address) -> Result<(), FlashLoanError> {
+    // Attempt to get asset params from cross-asset module
+    if let Ok(params) = crate::cross_asset::get_asset_params_internal(env, asset) {
+        if params.borrow_cap > 0 {
+            let total_debt = crate::cross_asset::get_total_asset_debt_internal(env, asset);
+            if total_debt > params.borrow_cap {
+                return Err(FlashLoanError::BorrowCapExceeded);
+            }
+        }
+    }
     Ok(())
 }
 

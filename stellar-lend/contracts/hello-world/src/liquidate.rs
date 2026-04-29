@@ -61,110 +61,13 @@ pub enum LiquidationError {
     ReadOnlyMode = 12,
 }
 
-/// Helper to get asset decimals from the token contract or default to 7 for XLM.
-fn get_asset_decimals(env: &Env, asset: &Option<Address>) -> u32 {
-    match asset {
-        Some(addr) => TokenClient::new(env, addr).decimals(),
-        None => 7, // Native XLM has 7 decimals
-    }
-}
+// ── Public API ────────────────────────────────────────────────────────────────
 
-/// Helper function to get the native asset contract address from storage
-fn get_native_asset_address(env: &Env) -> Result<Address, LiquidationError> {
-    env.storage()
-        .persistent()
-        .get::<DepositDataKey, Address>(&DepositDataKey::NativeAssetAddress)
-        .ok_or(LiquidationError::InvalidAsset)
-}
-
-/// Fetch prices for both debt and collateral assets
-fn get_liquidation_prices(
-    env: &Env,
-    debt_asset: &Option<Address>,
-    collateral_asset: &Option<Address>,
-) -> Result<(i128, i128), LiquidationError> {
-    let d_price = if let Some(ref asset) = debt_asset {
-        get_asset_price(env, asset)
-    } else {
-        get_asset_price(env, &get_native_asset_address(env)?)
-    };
-
-    let c_price = if let Some(ref asset) = collateral_asset {
-        get_asset_price(env, asset)
-    } else {
-        get_asset_price(env, &get_native_asset_address(env)?)
-    };
-
-    if d_price <= 0 || c_price <= 0 {
-        return Err(LiquidationError::PriceNotAvailable);
-    }
-
-    Ok((d_price, c_price))
-}
-
-/// Helper to fetch price from oracle.
-fn get_asset_price(env: &Env, asset: &Address) -> i128 {
-    get_price(env, asset).unwrap_or(0)
-}
-
-/// Helper to calculate current debt including interest since last accrual.
-fn calculate_accrued_debt(env: &Env, position: &Position) -> Result<i128, LiquidationError> {
-    let current_time = env.ledger().timestamp();
-    let principal = position.debt;
-    let stored_interest = position.borrow_interest;
-
-    if principal == 0 {
-        return Ok(stored_interest);
-    }
-    if current_time <= position.last_accrual_time {
-        return Ok(principal
-            .checked_add(stored_interest)
-            .ok_or(LiquidationError::Overflow)?);
-    }
-
-    let rate_bps =
-        crate::interest_rate::calculate_borrow_rate(env).map_err(|_| LiquidationError::Overflow)?;
-
-    let delta_interest = crate::interest_rate::calculate_accrued_interest(
-        principal,
-        position.last_accrual_time,
-        current_time,
-        rate_bps,
-    )
-    .map_err(|_| LiquidationError::Overflow)?;
-
-    principal
-        .checked_add(stored_interest)
-        .and_then(|v| v.checked_add(delta_interest))
-        .ok_or(LiquidationError::Overflow)
-}
-
-/// # Liquidation: Debt Repayment and Collateral Seizure
+/// Executes a normal liquidation of `borrower`'s `borrow_asset` position.
 ///
-/// This function allows a liquidator to repay a portion of a borrower's undercollateralized debt
-/// in exchange for a discounted portion of their collateral.
-///
-/// # Logic and Economics
-/// 1. Verifies position health (must be below liquidation threshold).
-/// 2. Enforces close factor (maximum repayment per transaction).
-/// 3. Calculates incentive-adjusted collateral to seize using I256 precision.
-/// 4. Updates borrower state and global analytics.
-/// 5. Transfers debt from liquidator and collateral to liquidator.
-///
-/// # Equations
-/// - `max_repayable = total_debt * close_factor`
-/// - `collateral_seized = (repaid_debt * debt_price * (1 + incentive) * 10^col_decimals) / (collateral_price * 10^debt_decimals)`
-///
-/// # Errors
-/// * `InvalidAmount`: Debt amount <= 0.
-/// * `LiquidationPaused`: Protocol or specific operation is paused.
-/// * `NotLiquidatable`: Borrower position is healthy or non-existent.
-/// * `PriceNotAvailable`: Oracle prices missing or invalid.
-/// * `Overflow`: Mathematical overflow during precision scaling.
-///
-/// # Security
-/// * Uses Checks-Effects-Interactions (CEI) to prevent reentrancy during cross-contract token transfers.
-/// * Implements strict capping to ensure seized collateral never exceeds available borrower balance.
+/// The liquidator specifies how much debt they wish to repay (`repay_amount`).
+/// The function caps this at `CLOSE_FACTOR_BPS` of the outstanding borrow and
+/// ensures the position is actually unhealthy before proceeding.
 pub fn liquidate(
     env: &Env,
     liquidator: Address,
@@ -285,20 +188,14 @@ fn execute_liquidation_logic(
         return Err(LiquidationError::Overflow);
     }
 
-    // 6. ENFORCE HEALTH AND CLOSE FACTOR
-    // Accrue debt up to current timestamp for accurate health assessment
-    let current_total_debt = calculate_accrued_debt(env, &position)?;
-
-    if !can_be_liquidated(env, borrower_collateral, current_total_debt).unwrap_or(false) {
-        return Err(LiquidationError::NotLiquidatable);
+    // Guard: no new liquidations during shutdown (use emergency_liquidate).
+    if storage::is_shutdown(env) {
+        return Err(LendingError::EmergencyShutdown);
     }
 
-    let max_liquidatable = get_max_liquidatable_amount(env, current_total_debt)
-        .map_err(|_| LiquidationError::Overflow)?;
-    let actual_debt_liquidated = debt_amount.min(max_liquidatable).min(current_total_debt);
-
-    if actual_debt_liquidated <= 0 {
-        return Err(LiquidationError::InvalidAmount);
+    let borrow_market = storage::get_market(env, borrow_asset)?;
+    if !borrow_market.is_active {
+        return Err(LendingError::MarketNotFound);
     }
 
     // 7. CALCULATE SEIZURE WITH PRECISION MATH
@@ -358,15 +255,15 @@ fn execute_liquidation_logic(
             .unwrap_or(0);
     }
 
-    position.collateral = borrower_collateral
-        .checked_sub(collateral_seized)
-        .unwrap_or(0);
-    position.last_accrual_time = env.ledger().timestamp();
+    // Verify position is unhealthy.
+    check_position_unhealthy(env, borrower, borrow_asset, collateral_asset)?;
 
-    env.storage().persistent().set(&position_key, &position);
-    env.storage()
-        .persistent()
-        .set(&collateral_key, &position.collateral);
+    // Apply close factor cap.
+    let max_repay = user_borrow
+        .checked_mul(CLOSE_FACTOR_BPS)
+        .ok_or(LendingError::InvalidAmount)?
+        / oracle::BPS_DENOM;
+    let actual_repay = repay_amount.min(max_repay);
 
     record_liquidation_analytics(env, actual_debt_liquidated, collateral_seized)
         .map_err(|_| LiquidationError::Overflow)?;
@@ -441,34 +338,64 @@ fn emit_liquidation_events(
     Ok((actual_debt_liquidated, collateral_seized, incentive_amount))
 }
 
-/// Update protocol analytics after liquidation
-fn record_liquidation_analytics(
+/// Full liquidation regardless of close factor.  Used by governance during
+/// emergency shutdown.  Always writes off any residual shortfall.
+pub fn emergency_liquidate(
     env: &Env,
-    debt_liquidated: i128,
-    collateral_seized: i128,
-) -> Result<(), LiquidationError> {
-    let analytics_key = DepositDataKey::ProtocolAnalytics;
-    let mut analytics = env
-        .storage()
-        .persistent()
-        .get::<DepositDataKey, ProtocolAnalytics>(&analytics_key)
-        .unwrap_or(ProtocolAnalytics {
-            total_deposits: 0,
-            total_borrows: 0,
-            total_value_locked: 0,
+    borrower: &Address,
+    borrow_asset: &Address,
+    collateral_asset: &Address,
+) -> Result<LiquidationResult, LendingError> {
+    let user_borrow = storage::get_user_borrow(env, borrower, borrow_asset);
+    if user_borrow == 0 {
+        return Ok(LiquidationResult {
+            collateral_seized: 0,
+            debt_repaid: 0,
+            bad_debt_event: None,
         });
+    }
 
-    analytics.total_borrows = analytics
-        .total_borrows
-        .checked_sub(debt_liquidated)
-        .unwrap_or(0);
-    analytics.total_value_locked = analytics
-        .total_value_locked
-        .checked_sub(collateral_seized)
-        .unwrap_or(0);
+    let user_collateral = storage::get_user_deposit(env, borrower, collateral_asset);
 
-    env.storage().persistent().set(&analytics_key, &analytics);
-    Ok(())
+    // Seize all collateral.
+    storage::set_user_deposit(env, borrower, collateral_asset, 0);
+    // NOTE: do NOT zero user_borrow here — record_bad_debt reads it to
+    // correctly decrement total_borrows.  It will zero it as part of I-6.
+
+    let mut col_mkt = storage::get_market(env, collateral_asset)?;
+    col_mkt.total_deposits = (col_mkt.total_deposits - user_collateral).max(0);
+    storage::set_market(env, collateral_asset, &col_mkt);
+
+    // Compute residual in USD terms.
+    let collateral_usd = oracle::usd_value(env, collateral_asset, user_collateral)?;
+    let borrow_usd = oracle::usd_value(env, borrow_asset, user_borrow)?;
+    let residual = (borrow_usd - collateral_usd).max(0);
+
+    // record_bad_debt zeros the user borrow, decrements total_borrows,
+    // and writes off the residual against reserves / bad_debt.
+    let bad_debt_event = if residual > 0 {
+        Some(bad_debt_accounting::record_bad_debt(
+            env,
+            borrower,
+            borrow_asset,
+            residual,
+            user_collateral,
+        )?)
+    } else {
+        // No shortfall: manually zero the position and decrement totals.
+        let user_borrow_remaining = storage::get_user_borrow(env, borrower, borrow_asset);
+        storage::set_user_borrow(env, borrower, borrow_asset, 0);
+        let mut borrow_mkt = storage::get_market(env, borrow_asset)?;
+        borrow_mkt.total_borrows = (borrow_mkt.total_borrows - user_borrow_remaining).max(0);
+        storage::set_market(env, borrow_asset, &borrow_mkt);
+        None
+    };
+
+    Ok(LiquidationResult {
+        collateral_seized: user_collateral,
+        debt_repaid: user_borrow,
+        bad_debt_event,
+    })
 }
 
 /// Snapshot of state taken before liquidation for formal-verification hooks.
@@ -535,4 +462,26 @@ mod verification_hooks_tests {
             &snapshot, &position, 1_100, 900
         ));
     }
+    Ok(())
+}
+
+fn compute_collateral_seized(
+    env: &Env,
+    borrow_asset: &Address,
+    collateral_asset: &Address,
+    repay_amount: i128,
+    bonus_bps: i128,
+) -> Result<i128, LendingError> {
+    let borrow_price = oracle::get_price(env, borrow_asset)?;
+    let collateral_price = oracle::get_price(env, collateral_asset)?;
+
+    // repay_amount expressed in collateral units, grossed up by bonus.
+    let seized = repay_amount
+        .checked_mul(borrow_price)
+        .ok_or(LendingError::InvalidAmount)?
+        .checked_mul(bonus_bps)
+        .ok_or(LendingError::InvalidAmount)?
+        / (collateral_price * oracle::BPS_DENOM);
+
+    Ok(seized)
 }

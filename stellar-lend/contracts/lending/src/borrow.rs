@@ -11,6 +11,7 @@ use crate::constants::{
     DEFAULT_LIQUIDATION_THRESHOLD_BPS,
 };
 use crate::pause::{self, blocks_high_risk_ops, PauseType};
+use crate::validation;
 use soroban_sdk::{contracterror, contractevent, contracttype, Address, Env, I256};
 
 pub use crate::errors::BorrowError;
@@ -286,9 +287,7 @@ pub fn set_liquidation_threshold_bps(
         return Err(BorrowError::Unauthorized);
     }
     admin.require_auth();
-    if bps <= 0 || bps > BPS_SCALE {
-        return Err(BorrowError::InvalidAmount);
-    }
+    validation::assert_bps_range(bps)?;
     env.storage()
         .instance()
         .set(&BorrowDataKey::LiquidationThresholdBps, &bps);
@@ -311,8 +310,9 @@ pub fn set_close_factor_bps(env: &Env, admin: &Address, bps: i128) -> Result<(),
         return Err(BorrowError::Unauthorized);
     }
     admin.require_auth();
-    if !(1..=BPS_SCALE).contains(&bps) {
-        return Err(BorrowError::InvalidAmount);
+    validation::assert_bps_range(bps)?;
+    if bps == 0 {
+        return Err(BorrowError::InvalidParameterRange);
     }
     env.storage()
         .instance()
@@ -340,9 +340,7 @@ pub fn set_liquidation_incentive_bps(
         return Err(BorrowError::Unauthorized);
     }
     admin.require_auth();
-    if !(0..=BPS_SCALE).contains(&bps) {
-        return Err(BorrowError::InvalidAmount);
-    }
+    validation::assert_bps_range(bps)?;
     env.storage()
         .instance()
         .set(&BorrowDataKey::LiquidationIncentiveBps, &bps);
@@ -419,6 +417,8 @@ pub fn initialize_borrow_settings(
     debt_ceiling: i128,
     min_borrow_amount: i128,
 ) -> Result<(), BorrowError> {
+    validation::assert_positive(debt_ceiling)?;
+    validation::assert_positive(min_borrow_amount)?;
     env.storage()
         .instance()
         .set(&BorrowDataKey::BorrowDebtCeiling, &debt_ceiling);

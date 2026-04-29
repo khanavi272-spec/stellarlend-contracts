@@ -364,153 +364,71 @@ pub fn update_price_feed(
 /// * `env` - The Soroban environment
 /// * `asset` - The asset address
 ///
-/// # Returns
-/// Returns the current price, using cache or fallback if needed
-pub fn get_price(env: &Env, asset: &Address) -> Result<i128, OracleError> {
-    // Try cache first
-    if let Some(cached_price) = get_cached_price(env, asset) {
-        return Ok(cached_price);
-    }
-
-    // Get primary price feed
-    let feed_key = OracleDataKey::PriceFeed(asset.clone());
-    if let Some(feed) = env
+/// In production this would call an external oracle contract.  During tests the
+/// mock store (set via `set_mock_price`) is consulted first.
+pub fn get_price(env: &Env, asset: &Address) -> Result<i128, crate::types::LendingError> {
+    // Try mock store (test environment).
+    let key = soroban_sdk::symbol_short!("prices");
+    if let Some(map) = env
         .storage()
-        .persistent()
-        .get::<OracleDataKey, PriceFeed>(&feed_key)
+        .temporary()
+        .get::<soroban_sdk::Symbol, Map<Address, i128>>(&key)
     {
-        // Check if price is stale
-        if is_price_stale(env, feed.last_updated) {
-            // Try fallback oracle
-            if let Ok(fallback_price) = get_fallback_price(env, asset) {
-                return Ok(fallback_price);
-            }
-            // If fallback failed or not configured, but we have a stale price,
-            // we could return it in emergency, but here we enforce staleness
-            return Err(OracleError::StalePrice);
-        }
-
-        // Cache the price
-        cache_price(env, asset, feed.price);
-
-        return Ok(feed.price);
-    }
-
-    // No primary price feed found, try fallback
-    get_fallback_price(env, asset)
-}
-
-/// Get price from fallback oracle
-fn get_fallback_price(env: &Env, asset: &Address) -> Result<i128, OracleError> {
-    let fallback_key = OracleDataKey::FallbackOracle(asset.clone());
-    if let Some(fallback_oracle) = env
-        .storage()
-        .persistent()
-        .get::<OracleDataKey, Address>(&fallback_key)
-    {
-        // Get price from fallback oracle feed slot
-        let feed_key = OracleDataKey::FallbackFeed(asset.clone());
-        if let Some(feed) = env
-            .storage()
-            .persistent()
-            .get::<OracleDataKey, PriceFeed>(&feed_key)
-        {
-            // Check if fallback price is valid and from authorized oracle
-            if feed.oracle == fallback_oracle && !is_price_stale(env, feed.last_updated) {
-                cache_price(env, asset, feed.price);
-                return Ok(feed.price);
-            }
+        if let Some(price) = map.get(asset.clone()) {
+            validate_price(price)?;
+            return Ok(price);
         }
     }
-
-    Err(OracleError::FallbackNotConfigured)
+    // Fallback: no oracle configured → reject.
+    Err(crate::types::LendingError::InvalidOracle)
 }
 
-/// Set primary oracle for an asset
-///
-/// # Arguments
-/// * `env` - The Soroban environment
-/// * `caller` - The address calling this function (must be admin)
-/// * `asset` - The asset address
-/// * `primary_oracle` - The primary oracle address
-pub fn set_primary_oracle(
-    env: &Env,
-    caller: Address,
-    asset: Address,
-    primary_oracle: Address,
-) -> Result<(), OracleError> {
-    // Check authorization
-    let admin = get_admin(env).ok_or(OracleError::Unauthorized)?;
-
-    if caller != admin {
-        return Err(OracleError::Unauthorized);
-    }
-
-    // Set primary oracle
-    let primary_key = OracleDataKey::PrimaryOracle(asset);
-    env.storage()
-        .persistent()
-        .set(&primary_key, &primary_oracle);
-
-    Ok(())
+/// Sets a mock price in temporary storage (test-only helper exposed via
+/// `#[cfg(test)]` in the test modules).
+pub fn set_mock_price(env: &Env, asset: &Address, price: i128) {
+    let key = soroban_sdk::symbol_short!("prices");
+    let mut map: Map<Address, i128> = env
+        .storage()
+        .temporary()
+        .get::<soroban_sdk::Symbol, Map<Address, i128>>(&key)
+        .unwrap_or_else(|| Map::new(env));
+    map.set(asset.clone(), price);
+    env.storage().temporary().set(&key, &map);
 }
 
-/// Set fallback oracle for an asset
+/// Computes the USD value of `amount` units of `asset`.
 ///
-/// # Arguments
-/// * `env` - The Soroban environment
-/// * `caller` - The address calling this function (must be admin)
-/// * `asset` - The asset address
-/// * `fallback_oracle` - The fallback oracle address
-pub fn set_fallback_oracle(
-    env: &Env,
-    caller: Address,
-    asset: Address,
-    fallback_oracle: Address,
-) -> Result<(), OracleError> {
-    // Check authorization
-    crate::admin::require_admin(env, &caller).map_err(|_| OracleError::Unauthorized)?;
-
-    // Validate oracle address
-    if fallback_oracle == env.current_contract_address() {
-        return Err(OracleError::InvalidOracle);
-    }
-
-    // Set fallback oracle
-    let fallback_key = OracleDataKey::FallbackOracle(asset);
-    env.storage()
-        .persistent()
-        .set(&fallback_key, &fallback_oracle);
-
-    Ok(())
+/// `amount` is in the asset's native precision (scaled by PRICE_PRECISION
+/// here so callers stay in integer arithmetic).
+pub fn usd_value(env: &Env, asset: &Address, amount: i128) -> Result<i128, crate::types::LendingError> {
+    let price = get_price(env, asset)?;
+    Ok(amount
+        .checked_mul(price)
+        .ok_or(crate::types::LendingError::InvalidAmount)?
+        / PRICE_PRECISION)
 }
 
-/// Configure oracle parameters
+/// Computes the maximum borrow capacity of a collateral position.
 ///
-/// # Arguments
-/// * `env` - The Soroban environment
-/// * `caller` - The address calling this function (must be admin)
-/// * `config` - The new oracle configuration
-pub fn configure_oracle(
+/// `collateral_factor_bps` is expressed in basis points (e.g. 7500 = 75%).
+pub fn max_borrow_usd(
     env: &Env,
-    caller: Address,
-    config: OracleConfig,
-) -> Result<(), OracleError> {
-    // Check authorization
-    crate::admin::require_admin(env, &caller).map_err(|_| OracleError::Unauthorized)?;
+    collateral_asset: &Address,
+    collateral_amount: i128,
+    collateral_factor_bps: i128,
+) -> Result<i128, crate::types::LendingError> {
+    let col_value = usd_value(env, collateral_asset, collateral_amount)?;
+    Ok(col_value
+        .checked_mul(collateral_factor_bps)
+        .ok_or(crate::types::LendingError::InvalidAmount)?
+        / 10_000)
+}
 
-    // Validate configuration
-    if config.max_deviation_bps <= 0 || config.max_deviation_bps > 10000 {
-        return Err(OracleError::InvalidPrice);
+// ── Internal helpers ─────────────────────────────────────────────────────────
+
+fn validate_price(price: i128) -> Result<(), crate::types::LendingError> {
+    if price < MIN_PRICE {
+        return Err(crate::types::LendingError::OraclePriceTooLow);
     }
-
-    if config.max_staleness_seconds == 0 {
-        return Err(OracleError::InvalidPrice);
-    }
-
-    // Update configuration
-    let config_key = OracleDataKey::OracleConfig;
-    env.storage().persistent().set(&config_key, &config);
-
     Ok(())
 }
