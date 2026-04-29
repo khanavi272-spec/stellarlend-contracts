@@ -33,7 +33,7 @@ impl MockRateContract {
         interest_rate::get_config(&env)
     }
     pub fn update_config(env: Env, config: InterestRateConfig) {
-        interest_rate::update_config(&env, config);
+        interest_rate::update_config(&env, config).unwrap();
     }
     pub fn set_market(env: Env, deposits: i128, borrows: i128) {
         env.storage().persistent().set(&DepositDataKey::TotalAmount, &deposits);
@@ -177,4 +177,17 @@ fn test_supply_rate() {
     // 0% Utilization -> Borrow 1%, Supply = 1% - 2% = -1% -> capped at floor (0.5%)
     client.set_market(&1000, &0);
     assert_eq!(client.get_supply_rate(), 50);
+}
+
+#[test]
+#[should_panic(expected = "Status(ContractError(2))")]
+fn test_invalid_rate_config() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, MockRateContract);
+    let client = MockRateContractClient::new(&env, &contract_id);
+    client.init();
+    
+    let mut config = client.get_config();
+    config.base_rate_bps = 10001; // Invalid
+    client.update_config(&config);
 }

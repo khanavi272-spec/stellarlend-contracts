@@ -140,6 +140,20 @@ pub fn calculate_supply_rate(env: &Env) -> Result<i128, InterestRateError> {
     Ok((borrow_rate - config.spread_bps).max(config.rate_floor_bps))
 }
 
-pub fn update_config(env: &Env, config: InterestRateConfig) {
-    env.storage().persistent().set(&InterestRateDataKey::Config, &config);
+pub fn update_config(env: &Env, config: InterestRateConfig) -> Result<(), InterestRateError> {
+    if !(0..=BPS_SCALE).contains(&config.base_rate_bps)
+        || !(0..=BPS_SCALE).contains(&config.kink_utilization_bps)
+        || !(0..=BPS_SCALE).contains(&config.multiplier_bps)
+        || !(0..=BPS_SCALE).contains(&config.jump_multiplier_bps)
+        || !(0..=BPS_SCALE).contains(&config.rate_floor_bps)
+        || !(0..=BPS_SCALE).contains(&config.rate_ceiling_bps)
+        || !(0..=BPS_SCALE).contains(&config.spread_bps)
+        || config.rate_floor_bps > config.rate_ceiling_bps
+    {
+        return Err(InterestRateError::InvalidParameter);
+    }
+    env.storage()
+        .persistent()
+        .set(&InterestRateDataKey::Config, &config);
+    Ok(())
 }

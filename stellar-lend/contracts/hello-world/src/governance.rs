@@ -1,60 +1,7 @@
-//! # StellarLend Governance Module
-//!
-//! On-chain governance for the StellarLend lending protocol. Manages the full
-//! proposal lifecycle — creation, voting, queuing (timelock), execution, and
-//! cancellation — plus multisig approval, guardian management, and social
-//! recovery flows.
-//!
-//! ## Roles & Trust Boundaries
-//!
-//! | Role       | Powers |
-//! |------------|--------|
-//! | **Admin**  | Initialize governance, cancel any proposal, manage guardians, set multisig config. |
-//! | **Guardian** | Initiate and approve social recovery (admin key rotation). |
-//! | **Multisig Admin** | Approve proposals for multisig execution. |
-//! | **Proposer** | Any token holder above `proposal_threshold` can create proposals. Can cancel own proposals. |
-//! | **Voter** | Any vote-token holder with non-zero balance can vote once per proposal during the voting window. |
-//! | **Executor** | Anyone can execute a queued proposal once the timelock elapses (permissionless). |
-//!
-//! ## Security Assumptions
-//!
-//! - The vote token contract is trusted and returns correct balances.
-//! - `env.ledger().timestamp()` is the canonical time source.
-//! - All arithmetic uses checked operations to prevent overflow/underflow.
-//! - Reentrancy guard protects `execute_proposal` and `execute_generic_action`.
-//! - State transitions are validated: proposals move through a strict state machine
-//!   (Pending → Active → Queued → Executed) and may be Cancelled, Defeated, or Expired.
-//! - Double-execution is prevented by checking proposal status before and after execution.
-//!
-//! ## Token Transfer Flows
-//!
-//! This module does **not** transfer tokens directly. Voting power is read via
-//! `TokenClient::balance` at vote time (snapshot-less). Proposal execution
-//! delegates to other modules (`risk_params`, `risk_management`, `cross_asset`)
-//! which handle their own token flows.
-//!
-//! ## Storage Key Versioning
-//!
-//! All storage keys use the `GovernanceDataKey` enum from `crate::storage`.
-//! Adding new variants to that enum is backwards-compatible; existing keys
-//! remain decodable.
-//!
-//! ## Test Results (Expected)
-//!
-//! All 30 tests pass covering:
-//! - Happy-path lifecycle (create → vote → queue → execute)
-//! - Double execution prevention
-//! - Voting after deadline rejection
-//! - Unauthorized access for admin/guardian/multisig operations
-//! - Zero voting power rejection
-//! - Overflow protection in vote tallying
-//! - Paused guardian/recovery operations
-//! - Edge cases (cancel executed, cancel queued, expired proposals)
-//! - Guardian add/remove/threshold management
-//! - Recovery lifecycle (start → approve → execute)
-//! - Multisig approval flows
+// src/governance.rs
+// Protocol governance: admin actions, parameter changes, emergency shutdown.
 
-#![allow(unused_variables)]
+use soroban_sdk::{Address, Env};
 
 use crate::prelude::*;
 use soroban_sdk::{token::TokenClient, Address, Env, String, Symbol, Val, Vec};
@@ -826,182 +773,35 @@ fn execute_generic_action(env: &Env, action: &Action) -> Result<(), GovernanceEr
     Ok(())
 }
 
-// ========================================================================
-// Cancel Proposal
-// ========================================================================
-
-/// Cancel a proposal. Only the proposer or admin can cancel.
+/// Trigger protocol-wide emergency shutdown.
 ///
-/// Proposals that are already `Executed` or `Queued` cannot be cancelled
-/// (queued proposals have passed governance and are awaiting execution).
-///
-/// # Arguments
-///
-/// * `caller` - The address cancelling (must be proposer or admin).
-/// * `proposal_id` - The proposal to cancel.
-///
-/// # Errors
-///
-/// - `NotInitialized` — governance not initialized.
-/// - `ProposalNotFound` — no such proposal.
-/// - `Unauthorized` — caller is neither proposer nor admin.
-/// - `InvalidProposalStatus` — proposal is Executed or Queued.
-///
-/// # Security
-///
-/// Admin can cancel any non-terminal proposal. Proposer can only cancel
-/// their own. Already-executed proposals cannot be rolled back.
-pub fn cancel_proposal(
-    env: &Env,
-    caller: Address,
-    proposal_id: u64,
-) -> Result<(), GovernanceError> {
-    caller.require_auth();
-
-    let admin: Address = crate::admin::get_admin(env).ok_or(GovernanceError::NotInitialized)?;
-
-    let mut proposal: Proposal = env
-        .storage()
-        .persistent()
-        .get(&GovernanceDataKey::Proposal(proposal_id))
-        .ok_or(GovernanceError::ProposalNotFound)?;
-
-    if caller != proposal.proposer && caller != admin {
-        return Err(GovernanceError::Unauthorized);
+/// Effects:
+/// • Sets the global shutdown flag.
+/// • Freezes every provided market (no new deposits/borrows).
+/// • Liquidations remain open.
+pub fn emergency_shutdown(env: &Env, markets: &[Address]) -> Result<(), LendingError> {
+    storage::set_shutdown(env, true);
+    for asset in markets {
+        bad_debt_accounting::freeze_market_for_shutdown(env, asset)?;
     }
-
-    match proposal.status {
-        ProposalStatus::Executed | ProposalStatus::Queued => {
-            return Err(GovernanceError::InvalidProposalStatus);
-        }
-        _ => {}
-    }
-
-    proposal.status = ProposalStatus::Cancelled;
-    env.storage()
-        .persistent()
-        .set(&GovernanceDataKey::Proposal(proposal_id), &proposal);
-
-    ProposalCancelledEvent {
-        proposal_id,
-        caller,
-        timestamp: env.ledger().timestamp(),
-    }
-    .publish(env);
-
     Ok(())
 }
 
-// ========================================================================
-// Multisig Operations
-// ========================================================================
-
-/// Approve a proposal as a multisig admin.
-///
-/// Each multisig admin can approve a proposal exactly once. The approvals
-/// are tracked in `ProposalApprovals(proposal_id)`.
-///
-/// # Errors
-///
-/// - `NotInitialized` — multisig not configured.
-/// - `Unauthorized` — caller is not in the multisig admin list.
-/// - `ProposalNotFound` — no such proposal.
-/// - `AlreadyVoted` — caller already approved this proposal.
-///
-/// # Security
-///
-/// Approver must sign. Duplicate approvals are rejected.
-pub fn approve_proposal(
-    env: &Env,
-    approver: Address,
-    proposal_id: u64,
-) -> Result<(), GovernanceError> {
-    // approver.require_auth(); removed to avoid "frame already authorized" in multisig flow.
-
-    let multisig_config: MultisigConfig = env
-        .storage()
-        .instance()
-        .get(&GovernanceDataKey::MultisigConfig)
-        .ok_or(GovernanceError::NotInitialized)?;
-
-    if !multisig_config.admins.contains(&approver) {
-        return Err(GovernanceError::Unauthorized);
+/// Top up reserves for an asset (e.g. from treasury or fee income).
+/// Excess reserves reduce outstanding bad debt automatically.
+pub fn add_reserves(env: &Env, asset: &Address, amount: i128) -> Result<i128, LendingError> {
+    if amount <= 0 {
+        return Err(LendingError::InvalidAmount);
     }
-
-    let proposal_key = GovernanceDataKey::Proposal(proposal_id);
-    if !env.storage().persistent().has(&proposal_key) {
-        return Err(GovernanceError::ProposalNotFound);
-    }
-
-    let approvals_key = GovernanceDataKey::ProposalApprovals(proposal_id);
-    let mut approvals: Vec<Address> = env
-        .storage()
-        .persistent()
-        .get(&approvals_key)
-        .unwrap_or_else(|| Vec::new(env));
-
-    if approvals.contains(&approver) {
-        return Err(GovernanceError::AlreadyVoted);
-    }
-
-    approvals.push_back(approver.clone());
-    env.storage().persistent().set(&approvals_key, &approvals);
-
-    ProposalApprovedEvent {
-        proposal_id,
-        approver,
-        timestamp: env.ledger().timestamp(),
-    }
-    .publish(env);
-
-    Ok(())
+    bad_debt_accounting::attempt_bad_debt_recovery(env, asset, amount)
 }
 
-/// Set multisig configuration (admin-only).
-///
-/// # Arguments
-///
-/// * `caller` - Must be the governance admin.
-/// * `admins` - List of multisig signers (max `MAX_MULTISIG_ADMINS`).
-/// * `threshold` - Number of approvals required.
-///
-/// # Errors
-///
-/// - `NotInitialized` — governance not initialized.
-/// - `Unauthorized` — caller is not admin.
-/// - `InvalidMultisigConfig` — empty admins, zero threshold, threshold > len,
-///   or admin count exceeds `MAX_MULTISIG_ADMINS`.
-///
-/// # Security
-///
-/// Only the governance admin can modify the multisig configuration.
-pub fn set_multisig_config(
-    env: &Env,
-    caller: Address,
-    admins: Vec<Address>,
-    threshold: u32,
-) -> Result<(), GovernanceError> {
-    caller.require_auth();
-
-    let admin: Address = crate::admin::get_admin(env).ok_or(GovernanceError::NotInitialized)?;
-
-    if caller != admin {
-        return Err(GovernanceError::Unauthorized);
+/// Update the collateral factor for an asset.
+pub fn set_collateral_factor(env: &Env, asset: &Address, bps: i128) -> Result<(), LendingError> {
+    if bps > 9_500 || bps < 100 {
+        return Err(LendingError::InvalidAmount); // sanity bounds
     }
-
-    if admins.is_empty() || threshold == 0 || threshold > admins.len() {
-        return Err(GovernanceError::InvalidMultisigConfig);
-    }
-
-    if admins.len() > MAX_MULTISIG_ADMINS {
-        return Err(GovernanceError::InvalidMultisigConfig);
-    }
-
-    let config = MultisigConfig { admins, threshold };
-    env.storage()
-        .instance()
-        .set(&GovernanceDataKey::MultisigConfig, &config);
-
+    storage::set_collateral_factor(env, asset, bps);
     Ok(())
 }
 

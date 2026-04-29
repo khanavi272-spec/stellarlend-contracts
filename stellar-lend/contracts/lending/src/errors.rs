@@ -30,6 +30,9 @@ pub enum BorrowError {
     BelowMinimumBorrow = 1008,
     RepayAmountTooHigh = 1009,
     Reentrancy = 1010,
+    BorrowCapExceeded = 1011,
+    InvalidBorrowCap = 1012,
+    ExceedsDepositCap = 1013,
 }
 
 // ── Deposits (2000–2999) ──────────────────────────────────────────────
@@ -72,6 +75,7 @@ pub enum FlashLoanError {
     CallbackFailed = 4005,
     Reentrancy = 4006,
     ProtocolPaused = 4007,
+    BorrowCapExceeded = 4008,
 }
 
 // ── Oracles (5000–5999) ───────────────────────────────────────────────
@@ -85,6 +89,8 @@ pub enum OracleError {
     NoPriceFeed = 5004,
     InvalidOracle = 5005,
     OraclePaused = 5006,
+    OracleDecimalMismatch = 5007,
+    OracleDecimalsNotConfigured = 5008,
 }
 
 // ── Cross-Asset Operations (6000–6999) ────────────────────────────────
@@ -101,5 +107,6 @@ pub enum CrossAssetError {
     AssetNotSupported = 6007,
     PriceUnavailable = 6008,
     AlreadyInitialized = 6009,
-    ExceedsDepositCap = 6010,
+    BorrowCapExceeded = 6010,
+    InvalidBorrowCap = 6011,
 }
