@@ -196,7 +196,7 @@ impl LendingContract {
             panic!("Unauthorized");
         }
         const MAX_FEE: i128 = 1000;
-        if fee_bps < 0 || fee_bps > MAX_FEE {
+        if !(0..=MAX_FEE).contains(&fee_bps) {
             panic!("InvalidFeeBps");
         }
         env.storage().instance().set(&"flash_fee_bps", &fee_bps);
