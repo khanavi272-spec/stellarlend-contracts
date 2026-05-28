@@ -54,7 +54,7 @@ impl InterestCalcResult {
 /// Calculate interest with configurable rounding strategy
 ///
 /// # Formula (with precision protection)
-/// ```
+/// ```text
 /// interest = (borrowed_amount * elapsed_seconds * rate_bps * PRECISION) 
 ///            / (SECONDS_PER_YEAR * BASIS_POINTS_SCALE)
 /// ```
