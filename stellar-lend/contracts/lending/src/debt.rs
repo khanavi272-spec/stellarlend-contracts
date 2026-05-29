@@ -1,6 +1,7 @@
 use soroban_sdk::{contracttype, Address, Env};
 
-use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingError, RoundingMode};
+use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingMode};
+use crate::DataKey;
 
 pub const DEFAULT_APR_BPS: i128 = 500;
 
@@ -24,7 +25,7 @@ impl From<&'static str> for DebtError {
 }
 
 pub fn load_debt(env: &Env, user: &Address) -> DebtPosition {
-    let key = ("debt", user.clone());
+    let key = DataKey::Debt(user.clone());
     env.storage()
         .persistent()
         .get(&key)
@@ -35,7 +36,7 @@ pub fn load_debt(env: &Env, user: &Address) -> DebtPosition {
 }
 
 pub fn save_debt(env: &Env, user: &Address, position: &DebtPosition) {
-    let key = ("debt", user.clone());
+    let key = DataKey::Debt(user.clone());
     env.storage().persistent().set(&key, position);
 }
 

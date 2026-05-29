@@ -51,3 +51,8 @@ The module naturally publishes notifications for external services to subscribe 
 - `admin_changed`: Triggered when the super admin changes. Contains `new_admin` and `caller`.
 - `role_granted`: Identifies a granted privilege containing `account` and topic-based `role`.
 - `role_revoked`: Tracks when an account’s role is cleared. Contains `account` and topic-based `role`.
+
+## Notes about `get_admin()` and initialization
+
+- The `get_admin()` getter now returns a typed contract error when the contract is uninitialized. Use the client `try_get_admin()` helper or handle `LendingError::NotInitialized` explicitly.
+- `initialize()` will now return an error on a second call (`LendingError::AlreadyInitialized`) to prevent accidental re-initialization.

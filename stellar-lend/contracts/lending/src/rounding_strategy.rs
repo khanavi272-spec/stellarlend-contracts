@@ -2,6 +2,15 @@
 // ROUNDING STRATEGY - Fix interest accrual drift
 // ════════════════════════════════════════════════════════════════
 
+use soroban_sdk::Env;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundingError {
+    Overflow,
+    InvalidParameters,
+    UnacceptableDrift,
+}
+
 /// Rounding strategy for interest calculations
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundingMode {
@@ -62,7 +71,7 @@ impl InterestCalcResult {
 /// Calculate interest with configurable rounding strategy
 ///
 /// # Formula (with precision protection)
-/// ```
+/// ```text
 /// interest = (borrowed_amount * elapsed_seconds * rate_bps * PRECISION)
 ///            / (SECONDS_PER_YEAR * BASIS_POINTS_SCALE)
 /// ```
@@ -180,7 +189,7 @@ pub fn reconcile_debt_with_drift_correction(
     freshly_calculated_debt: i128,
     accumulated_drift: i128,
     max_allowed_drift_bps: i128, // e.g., 10 = 0.1% max drift
-) -> Result<(i128, i128), RoundingError> {
+)-> Result<(i128, i128), RoundingError> {
     // Calculate the drift in basis points
     let debt_basis = if stored_debt > 0 {
         (freshly_calculated_debt - stored_debt) * 10000 / stored_debt
@@ -268,7 +277,7 @@ mod tests {
         // 24 * (1000 * 0.05 / 12) ≈ 100
         // Should be close to 100 with bankers rounding
         assert!(
-            (95..=105).contains(&total_interest),
+            total_interest >= 95 && total_interest <= 105,
             "total_interest: {}",
             total_interest
         );
