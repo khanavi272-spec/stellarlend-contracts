@@ -2,15 +2,6 @@
 // ROUNDING STRATEGY - Fix interest accrual drift
 // ════════════════════════════════════════════════════════════════
 
-use soroban_sdk::Env;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RoundingError {
-    Overflow,
-    InvalidParameters,
-    UnacceptableDrift,
-}
-
 /// Rounding strategy for interest calculations
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoundingMode {
@@ -277,7 +268,7 @@ mod tests {
         // 24 * (1000 * 0.05 / 12) ≈ 100
         // Should be close to 100 with bankers rounding
         assert!(
-            total_interest >= 95 && total_interest <= 105,
+            (95..=105).contains(&total_interest),
             "total_interest: {}",
             total_interest
         );

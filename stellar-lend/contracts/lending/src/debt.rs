@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env};
 
-use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingMode};
+use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingError, RoundingMode};
 use crate::DataKey;
 
 pub const DEFAULT_APR_BPS: i128 = 500;
@@ -20,6 +20,12 @@ pub enum DebtError {
 
 impl From<&'static str> for DebtError {
     fn from(_: &'static str) -> Self {
+        DebtError::Overflow
+    }
+}
+
+impl From<RoundingError> for DebtError {
+    fn from(_: RoundingError) -> Self {
         DebtError::Overflow
     }
 }
