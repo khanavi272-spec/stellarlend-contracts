@@ -316,6 +316,7 @@ impl LendingContract {
         if amount < min_borrow {
             return Err(LendingError::BelowMinimumBorrow);
         }
+
         let now = env.ledger().timestamp();
         let position = load_debt(&env, &user);
         let updated = borrow_amount(position, now, amount, DEFAULT_APR_BPS).map_err(|e| match e {
@@ -519,7 +520,36 @@ impl LendingContract {
         } else {
             1_000_000
         };
-        PositionSummary { collateral: col, debt, health_factor }
+
+        PositionSummary {
+            collateral: col,
+            debt,
+            health_factor,
+        }
+    }
+
+}
+
+// Close the `impl LendingContract` block above. Helper functions below are
+// free functions and must not be declared inside the `impl`.
+fn release_reentrancy_lock(env: &Env) {
+    let reentrancy_lock_key = Symbol::new(env, "reent_l");
+    env.storage().temporary().remove(&reentrancy_lock_key);
+}
+
+fn with_reentrancy_lock<T>(env: &Env, f: impl FnOnce() -> T) -> T {
+    acquire_reentrancy_lock(env);
+    let result = f();
+    release_reentrancy_lock(env);
+    result
+}
+
+fn extend_collateral_ttl(env: &Env, user: &Address) {
+    let key = DataKey::Collateral(user.clone());
+    let extend_to = env.storage().max_ttl().min(PERSISTENT_TTL_LEDGERS);
+    let threshold = extend_to / 2 + 1;
+    if env.storage().persistent().has(&key) {
+        env.storage().persistent().extend_ttl(&key, threshold, extend_to);
     }
 }
 
