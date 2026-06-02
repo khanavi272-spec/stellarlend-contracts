@@ -138,4 +138,18 @@ oracle/
 └── package.json
 ```
 
+## Logging Policy
+
+To prevent operational metadata leakage in shared log aggregators, the oracle service never emits the raw admin public key to any log sink.
+
+### Admin key redaction
+
+- **One-time startup line**: On initialization, `ContractUpdater` logs `adminKeyPrefix` — a short SHA-256 prefix of the admin public key in the form `sha256:<first-8-hex-chars>` (e.g. `sha256:a1b2c3d4`). This is enough for an operator to confirm which key is active without exposing the full key.
+- **Retry and error paths**: No logger call in the retry loop or error handler references the raw public key. Only the asset name, attempt number, and error message are included.
+- **Helper function**: `hashPublicKey(pubkey: string): string` in `src/utils/logger.ts` is the single, tested point of contact for producing safe key identifiers. Use it for any future log site that needs to reference a Stellar public key.
+
+### Rationale
+
+A full Stellar G-address appearing in every retry log allows anyone with read access to a shared log aggregator to trivially correlate oracle failure windows with the deployer identity. The SHA-256 prefix retains enough entropy for operator correlation while making such correlation impossible without the original key.
+
 ## Cheers!
