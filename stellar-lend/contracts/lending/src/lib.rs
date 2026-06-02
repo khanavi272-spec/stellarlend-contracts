@@ -3,6 +3,7 @@
 mod debt;
 pub mod rate_model;
 pub mod rounding_strategy;
+pub mod math;
 
 #[cfg(test)]
 mod interest_drift_regression_test;
@@ -22,6 +23,9 @@ const DEFAULT_DEPOSIT_CAP: i128 = 1_000_000_000_000;
 const HEALTH_FACTOR_SCALE: i128 = 10_000;
 const HEALTH_FACTOR_NO_DEBT: i128 = 100_000_000;
 pub const LIQUIDATION_THRESHOLD_BPS: i128 = 8000;
+const DEFAULT_ORACLE_MAX_AGE_SECS: u64 = 3600;
+const ORACLE_SIGNATURE_DOMAIN: &[u8] = b"StellarLendOracle";
+const BPS_DENOM: i128 = 10_000;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -516,8 +520,8 @@ impl LendingContract {
             seized_collateral
         };
 
-        let new_debt = debt - actual_repay;
-        let new_col = collateral - final_seized;
+        let new_debt = debt.saturating_sub(actual_repay);
+        let new_col = collateral.saturating_sub(final_seized);
 
         let now = env.ledger().timestamp();
         let updated_position = DebtPosition {
@@ -786,7 +790,8 @@ impl LendingContract {
             extend_debt_ttl(&env, &user);
         }
         let debt = effective_debt(&position, env.ledger().timestamp(), DEFAULT_APR_BPS)
-            .unwrap_or(position.principal);
+            .unwrap_or(position.principal)
+            .max(0);
 
         if debt > 0 {
             col.checked_mul(LIQUIDATION_THRESHOLD_BPS)
@@ -924,6 +929,28 @@ fn current_borrow_rate(env: &Env) -> i128 {
         None => DEFAULT_APR_BPS,
     }
 }
+
+    #[contract]
+    pub struct MockAmm;
+    #[contractimpl]
+    impl MockAmm {
+        pub fn swap(_env: Env, _caller: Address, _in: Address, _out: Address, amount_in: i128, min_out: i128, _dead: u64) -> i128 {
+            let out = amount_in * 2;
+            if out < min_out {
+                panic!("SlippageExceeded");
+            }
+            out
+        }
+    }
+
+    #[contract]
+    pub struct BadAmm;
+    #[contractimpl]
+    impl BadAmm {
+        pub fn swap(_env: Env, _caller: Address, _in: Address, _out: Address, amount_in: i128, _min: i128, _dead: u64) -> i128 {
+            amount_in / 4
+        }
+    }
 
 #[cfg(test)]
 mod test {
