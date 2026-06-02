@@ -557,8 +557,6 @@ impl LendingContract {
             health_factor,
         }
     }
-    env.storage().temporary().set(&reentrancy_lock_key, &true);
-}
 
 fn release_reentrancy_lock(env: &Env) {
     let reentrancy_lock_key = Symbol::new(env, "reent_l");
