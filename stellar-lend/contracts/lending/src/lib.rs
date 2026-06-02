@@ -75,19 +75,22 @@ pub enum ProtocolAction {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum LendingError {
-    BelowMinimumBorrow   = 1008,
+    InvalidAmount = 1004,
+    BelowMinimumBorrow = 1008,
     /// Contract has not been initialized yet.
-    NotInitialized       = 1009,
+    NotInitialized = 1009,
     /// `initialize` was called a second time.
-    AlreadyInitialized   = 1010,
-    DebtCeilingExceeded  = 2001,
-    DepositCapExceeded   = 2002,
-    Overflow             = 2003,
+    AlreadyInitialized = 1010,
+    /// Not enough collateral to satisfy withdrawal
+    InsufficientCollateral = 1011,
+    DebtCeilingExceeded = 2001,
+    DepositCapExceeded = 2002,
+    Overflow = 2003,
     /// Caller is not the admin.
-    Unauthorized         = 2004,
+    Unauthorized = 2004,
     /// Fee outside the permitted range.
-    InvalidFeeBps        = 2005,
-    PositionHealthy      = 2006,
+    InvalidFeeBps = 2005,
+    PositionHealthy = 2006,
 }
 
 // ---------------------------------------------------------------------------
@@ -100,29 +103,6 @@ pub struct PositionSummary {
     pub collateral: i128,
     pub debt: i128,
     pub health_factor: i128,
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    BelowMinimumBorrow = 1008,
-    NotInitialized = 1009,
-    AlreadyInitialized = 1010,
-    PositionHealthy = 1011,
-}
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum LendingError {
-    InvalidAmount = 1004,
-    BelowMinimumBorrow = 1008,
-    NotInitialized = 1009,
-    AlreadyInitialized = 1010,
-    DebtCeilingExceeded = 2001,
-    DepositCapExceeded = 2002,
-    Overflow = 2003,
 }
 
 #[contract]
@@ -219,13 +199,13 @@ impl LendingContract {
             .ok_or(LendingError::Overflow)?;
 
         if new_total > deposit_cap {
-            return Err(Error::DepositCapExceeded);
+            return Err(LendingError::DepositCapExceeded);
         }
 
         // Update user collateral with overflow protection
         let key = DataKey::Collateral(user.clone());
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        let new_balance = current.checked_add(amount).ok_or(Error::Overflow)?;
+        let new_balance = current.checked_add(amount).ok_or(LendingError::Overflow)?;
         env.storage().persistent().set(&key, &new_balance);
         env.storage()
             .persistent()
@@ -323,7 +303,7 @@ impl LendingContract {
         let debt: i128 = env.storage().persistent().get(&debt_key).unwrap_or(0);
 
         if debt == 0 {
-            return Err(Error::PositionHealthy);
+            return Err(LendingError::PositionHealthy);
         }
 
         // Health Factor Calculation (base 10000). HF = (Collateral * Threshold) / Debt
@@ -332,7 +312,7 @@ impl LendingContract {
         let hf = (collateral * LIQUIDATION_THRESHOLD) / debt;
 
         if hf >= 10000 {
-            return Err(Error::PositionHealthy);
+            return Err(LendingError::PositionHealthy);
         }
 
         // Cap maximum allowed repayment by close factor (50%)
