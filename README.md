@@ -207,23 +207,20 @@ stellarlend-contracts/
 └── stellar-lend/            # Main contract workspace
     ├── Cargo.toml           # Workspace configuration
     └── contracts/
-        └── hello-world/     # Main StellarLend contract
+        ├── lending/         # Main StellarLend contract (Single Canonical Tree)
+        │   ├── Cargo.toml
+        │   ├── Makefile     # Build/test shortcuts
+        │   ├── README.md    # Contract-specific docs
+        │   └── src/
+        │       ├── lib.rs   # Main contract entry point
+        │       ├── rounding_strategy.rs # Mathematical utilities
+        │       └── interest_drift_regression_test.rs # Regression tests
+        └── hello-world/     # Minimal placeholder contract
             ├── Cargo.toml
-            ├── Makefile     # Build/test shortcuts
-            ├── README.md    # Contract-specific docs
+            ├── Makefile
+            ├── README.md
             └── src/
-                ├── lib.rs   # Main contract entry point
-                ├── deposit.rs
-                ├── borrow.rs
-                ├── repay.rs
-                ├── withdraw.rs
-                ├── liquidate.rs
-                ├── oracle.rs
-                ├── governance.rs
-                ├── amm.rs
-                ├── flash_loan.rs
-                ├── analytics.rs
-                └── test.rs  # Test suite
+                └── lib.rs
 ```
 
 ---
@@ -299,9 +296,13 @@ For a complete list of entrypoints including AMM, flash loans, bridge, governanc
 
 ## Documentation
 
+- **[Developer Glossary](docs/glossary.md)**: Key protocol terms, numeric scales (BPS, Health Factor), and common pitfalls for integrators
 - **[Protocol Documentation](docs/README.md)**: Comprehensive protocol documentation including modules, admin operations, monitoring, analytics, and upgrade procedures
+- **[Release Checklist](docs/release_checklist.md)**: Required tests, invariant coverage, upgrade safety, security notes template, and CI gates for every contract PR
 - **[Upgrade Authorization](docs/UPGRADE_AUTHORIZATION.md)**: Strict upgrade authorization boundaries, key rotation workflow, and security assumptions
 - **[Storage Layout and Migration](docs/storage.md)**: Detailed documentation of the contract's persistent storage structure, keys, types, and upgrade/migration strategies
+- **[Cross-Asset Rules](docs/CROSS_ASSET_RULES.md)**: Borrowing/repay rules, view guarantees (G-1..G-10), and invariants for multi-asset positions
+- **[Repay Semantics](stellar-lend/docs/REPAY_SEMANTICS.md)**: Both repay paths (single-asset vs cross-asset), overpay behaviour, interest ordering, and dust prevention
 - **[Contract README](stellar-lend/contracts/hello-world/README.md)**: Contract-specific documentation and entrypoint reference
 - **[CI/CD Documentation](ci-doc.md)**: Continuous integration setup and local reproduction guide
 - **[Example Reports](docs/examples/)**: Example JSON outputs for protocol and user analytics
