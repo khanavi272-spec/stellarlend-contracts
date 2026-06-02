@@ -91,6 +91,7 @@ pub enum ProtocolAction {
     Withdraw,
     Borrow,
     Repay,
+    Liquidate,
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +102,6 @@ pub enum ProtocolAction {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum LendingError {
-    InvalidAmount = 1004,
-    BelowMinimumBorrow = 1008,
     InvalidAmount = 1004,
     BelowMinimumBorrow = 1008,
     /// Contract has not been initialized yet.
@@ -119,9 +118,6 @@ pub enum LendingError {
     /// Fee outside the permitted range.
     InvalidFeeBps = 2005,
     PositionHealthy = 2006,
-    InvalidFeeBps = 2005,
-    PositionHealthy = 2006,
-    InsufficientCollateral = 2007,
 }
 
 // ---------------------------------------------------------------------------
@@ -307,19 +303,6 @@ impl LendingContract {
         env.storage()
             .instance()
             .set(&DataKey::DebtCeiling, &ceiling);
-        Ok(())
-    }
-
-    /// Set the flash-loan fee in basis points (admin-only, max 1000 BPS = 10 %).
-    pub fn set_flash_fee(env: Env, fee_bps: i128) -> Result<(), LendingError> {
-        let admin = Self::get_admin(env.clone());
-        admin.require_auth();
-        if fee_bps < 0 || fee_bps > 1_000 {
-            return Err(LendingError::InvalidFeeBps);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::FlashFeeBps, &fee_bps);
         Ok(())
     }
 
@@ -548,72 +531,6 @@ impl LendingContract {
         position
     }
 
-    /// Set the protocol-level debt ceiling (admin-only).
-    pub fn set_debt_ceiling(env: Env, ceiling: i128) -> Result<(), LendingError> {
-        let admin = Self::get_admin(env.clone());
-        admin.require_auth();
-        if ceiling <= 0 {
-            return Err(LendingError::Overflow);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::DebtCeiling, &ceiling);
-        Ok(())
-    }
-
-    /// Privileged function to update the global emergency state.
-    /// Admin can always call this. If a guardian is configured, the guardian
-    /// may also call this without admin authorization.
-    pub fn set_emergency_state(env: Env, new_state: EmergencyState) {
-        let admin = Self::get_admin(env.clone());
-        let guardian_opt: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
-
-        let caller_is_guardian = guardian_opt.map_or(false, |guardian| {
-            let auths = env.auths();
-            auths.iter().any(|(address, _)| address == &guardian)
-        });
-
-        if !caller_is_guardian {
-            admin.require_auth();
-        }
-
-        let old_state = get_emergency_state(&env);
-        set_emergency_state_internal(&env, new_state);
-
-        EmergencyStateChangedEvent {
-            old_state,
-            new_state,
-        }
-        .publish(&env);
-    }
-
-    fn get_flash_fee_bps(env: &Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::FlashFeeBps)
-            .unwrap_or(5)
-    }
-
-    /// Set the flash loan fee in basis points (admin-only). Must be in [0, 1000].
-    pub fn set_flash_fee(env: Env, fee_bps: i128) -> Result<(), LendingError> {
-        let admin = Self::get_admin(env.clone());
-        admin.require_auth();
-        if fee_bps < 0 || fee_bps > 1000 {
-            return Err(LendingError::InvalidFeeBps);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::FlashFeeBps, &fee_bps);
-        Ok(())
-    }
-
-    /// Set the guardian address (admin-only).
-    pub fn set_guardian(env: Env, guardian: Address) {
-        let admin = Self::get_admin(env.clone());
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Guardian, &guardian);
-    }
-
     /// Repay function used by receiver during callback to return funds to the contract.
     /// Uses checked arithmetic to prevent overflow/underflow.
     pub fn repay_flash_loan(env: Env, payer: Address, asset: Address, amount: i128) {
@@ -785,7 +702,15 @@ fn extend_debt_ttl(env: &Env, user: &Address) {
             .persistent()
             .extend_ttl(&key, threshold, extend_to);
     }
-    env.ledger().sequence() <= state.expires_at_ledger
+}
+
+fn pause_is_active(env: &Env, operation: PauseType) -> bool {
+    let key = DataKey::PauseState(operation);
+    env.storage()
+        .instance()
+        .get(&key)
+        .map(|state: PauseState| state.paused && env.ledger().sequence() <= state.expires_at_ledger)
+        .unwrap_or(false)
 }
 
 fn check_pause_status(env: &Env, action: ProtocolAction) {
@@ -802,19 +727,6 @@ fn check_pause_status(env: &Env, action: ProtocolAction) {
     if pause_is_active(env, operation) {
         panic!("OperationPaused");
     }
-}
-
-fn get_flash_fee_bps(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::FlashFeeBps)
-        .unwrap_or(5)
-}
-
-fn set_emergency_state_internal(env: &Env, state: EmergencyState) {
-    env.storage()
-        .instance()
-        .set(&DataKey::EmergencyState, &state);
 }
 
 fn get_emergency_state(env: &Env) -> EmergencyState {
@@ -1233,150 +1145,4 @@ mod test {
         let m = client.get_protocol_metrics();
         assert_eq!(m.ledger, env.ledger().sequence());
     }
-}
-
-/// Debit the reservation counter when a flash loan is initiated.
-fn reserve_flash_loan(env: &Env, asset: &Address, amount: i128) {
-    let current = get_reserved_for_flash_loan(env, asset);
-    let new_reserved = current
-        .checked_add(amount)
-        .expect("flash loan reservation overflow");
-
-    // Invariant: reserved cannot exceed total deposits
-    let total_deposits = get_total_deposits(env, asset);
-    assert!(
-        new_reserved <= total_deposits,
-        "reserved flash loan amount exceeds total deposits"
-    );
-
-    set_reserved_for_flash_loan(env, asset, new_reserved);
-
-    env.events().publish(
-        (Symbol::new(env, "flash_loan_reserved"), asset.clone()),
-        (amount, new_reserved),
-    );
-}
-
-/// Credit the reservation counter when a flash loan is repaid.
-fn release_flash_loan_reservation(env: &Env, asset: &Address, amount: i128) {
-    let current = get_reserved_for_flash_loan(env, asset);
-    assert!(current >= amount, "flash loan release exceeds reservation");
-
-    let new_reserved = current - amount;
-    set_reserved_for_flash_loan(env, asset, new_reserved);
-
-    env.events().publish(
-        (Symbol::new(env, "flash_loan_released"), asset.clone()),
-        (amount, new_reserved),
-    );
-}
-
-/// Compute effective available deposits for cap checking.
-/// This includes in-flight flash loan reservations.
-fn get_effective_deposits(env: &Env, asset: &Address) -> i128 {
-    let raw_deposits = get_total_deposits(env, asset);
-    let reserved = get_reserved_for_flash_loan(env, asset);
-    raw_deposits + reserved
-}
-
-/// Updated deposit-cap check that accounts for flash loan reservations.
-fn check_deposit_cap(env: &Env, asset: &Address, additional_amount: i128) {
-    let asset_params: AssetParams = env
-        .storage()
-        .persistent()
-        .get(&DataKey::AssetParams(asset.clone()))
-        .expect("asset params not set");
-
-    let deposit_cap = asset_params.deposit_cap;
-    if deposit_cap == 0 {
-        return; // No cap configured
-    }
-
-    // Use effective deposits (raw + reserved) for cap calculation
-    let effective_deposits = get_effective_deposits(env, asset);
-    let new_total = effective_deposits
-        .checked_add(additional_amount)
-        .expect("deposit cap check overflow");
-
-    assert!(
-        new_total <= deposit_cap,
-        "deposit cap exceeded: {} + {} > {}",
-        effective_deposits,
-        additional_amount,
-        deposit_cap
-    );
-}
-
-// Placeholder: get_total_deposits would be defined elsewhere in the contract
-fn get_total_deposits(env: &Env, asset: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::TotalDeposits(asset.clone()))
-        .unwrap_or(0i128)
-}
-
-// Flash Loan Entrypoint (Updated)
-
-/// Execute a flash loan with reservation accounting.
-///
-/// # Arguments
-/// * `asset` - The asset to flash loan
-/// * `amount` - The amount to loan
-/// * `callback` - Contract to call with the loaned amount
-/// * `callback_data` - Data passed to the callback contract
-///
-/// # Invariants
-/// 1. reserved_for_flash_loan is debited before transfer
-/// 2. Callback is invoked with loaned amount
-/// 3. Repayment + fee is verified
-/// 4. Reservation is credited back after repayment
-pub fn flash_loan(
-    env: Env,
-    asset: Address,
-    amount: i128,
-    callback: Address,
-    callback_data: soroban_sdk::Vec<Val>,
-) {
-    // Auth: caller must be authorized
-    let caller = env.current_contract_address();
-
-    // Reserve the flash loan amount against deposit cap
-    reserve_flash_loan(&env, &asset, amount);
-
-    // Transfer asset to callback contract
-    let token_client = token::Client::new(&env, &asset);
-    token_client.transfer(&caller, &callback, &amount);
-
-    // Invoke callback contract
-    let callback_client = FlashLoanReceiverClient::new(&env, &callback);
-    callback_client.on_flash_loan(
-        &caller,
-        &asset,
-        &amount,
-        &calculate_flash_loan_fee(&env, &asset, amount),
-        &callback_data,
-    );
-
-    // Verify repayment (amount + fee)
-    let fee = calculate_flash_loan_fee(&env, &asset, amount);
-    let expected_repayment = amount.checked_add(fee).expect("flash loan fee overflow");
-
-    let balance_after = token_client.balance(&caller);
-    let balance_before = get_contract_balance(&env, &asset);
-
-    assert!(
-        balance_after >= balance_before + expected_repayment,
-        "flash loan not repaid: expected {} + fee, got {}",
-        amount,
-        balance_after - balance_before
-    );
-
-    // Release the reservation
-    release_flash_loan_reservation(&env, &asset, amount);
-
-    // Emit event
-    env.events().publish(
-        (Symbol::new(&env, "flash_loan"), asset.clone()),
-        (amount, fee, caller),
-    );
 }
