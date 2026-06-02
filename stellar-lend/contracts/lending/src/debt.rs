@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, Env};
 
-use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingMode};
+use crate::rounding_strategy::{calculate_interest_with_rounding, RoundingError, RoundingMode};
 use crate::DataKey;
 
 pub const DEFAULT_APR_BPS: i128 = 500;
@@ -20,6 +20,12 @@ pub enum DebtError {
 
 impl From<&'static str> for DebtError {
     fn from(_: &'static str) -> Self {
+        DebtError::Overflow
+    }
+}
+
+impl From<RoundingError> for DebtError {
+    fn from(_: RoundingError) -> Self {
         DebtError::Overflow
     }
 }
@@ -120,10 +126,11 @@ pub fn repay_amount(
     }
 
     let mut settled = settle_accrual(&position, now, rate_bps)?;
-    settled.principal = settled
-        .principal
-        .checked_sub(amount)
-        .ok_or(DebtError::Overflow)?;
+    settled.principal = if amount >= settled.principal {
+        0
+    } else {
+        settled.principal - amount
+    };
     settled.last_update = now;
     Ok(settled)
 }

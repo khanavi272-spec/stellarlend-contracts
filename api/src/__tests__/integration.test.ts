@@ -159,4 +159,31 @@ describe('API Integration Tests', () => {
       expect([200, 204]).toContain(response.status);
     });
   });
+
+  describe('Deep healthz endpoint', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('returns 200 and structured status when rpc and contract reachable', async () => {
+      jest.spyOn(StellarService.prototype, 'pingContract').mockResolvedValue({ rpc: true, contract: true, ledger: 12345 });
+
+      const res = await request(app).get('/api/health/healthz');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('rpc', true);
+      expect(res.body).toHaveProperty('contract', true);
+      expect(res.body).toHaveProperty('ledger', 12345);
+    });
+
+    it('returns 503 when contract unreachable', async () => {
+      jest.spyOn(StellarService.prototype, 'pingContract').mockResolvedValue({ rpc: true, contract: false, ledger: null });
+
+      const res = await request(app).get('/api/health/healthz');
+
+      expect(res.status).toBe(503);
+      expect(res.body).toHaveProperty('rpc', true);
+      expect(res.body).toHaveProperty('contract', false);
+    });
+  });
 });
