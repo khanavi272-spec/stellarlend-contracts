@@ -62,20 +62,20 @@ pub fn calculate_interest_with_rounding(
 - `reconcile_debt_with_drift_correction()` - Validate user vs protocol accounting
 - `apply_rounding()` - Apply selected rounding strategy
 
-### 3. Updated Borrow Module
+### 3. Updated Debt Accrual Path
 
-**File:** `stellar-lend/contracts/lending/src/borrow.rs`
+**File:** `stellar-lend/contracts/lending/src/debt.rs`
 
 ```rust
-pub fn calculate_interest(env: &Env, debt_position: &DebtPosition) -> Result<i128, BorrowError> {
+pub fn accrue_interest(position: DebtPosition, now: u64) -> Result<DebtPosition, RoundingError> {
     // ...
     let result = calculate_interest_with_rounding(
-        debt_position.borrowed_amount,
+        position.principal,
         elapsed,
-        500, // 5% APR
-        RoundingMode::Bankers, // ← Applied here
+        DEFAULT_APR_BPS,
+        RoundingMode::Bankers,
     )?;
-    Ok(result.interest)
+    // ...
 }
 ```
 
@@ -151,12 +151,11 @@ test result: ok
 
 ## Files Changed
 
-1. `stellar-lend/contracts/lending/src/rounding_strategy.rs` (NEW)
-2. `stellar-lend/contracts/lending/src/borrow.rs` (UPDATED)
-3. `stellar-lend/contracts/lending/src/lib.rs` (UPDATED)
-4. `stellar-lend/contracts/lending/src/interest_drift_regression_test.rs` (NEW)
-5. `stellar-lend/contracts/lending/src/rounding_drift_test.rs` (NEW)
-6. `stellar-lend/docs/INTEREST_ROUNDING_FIX.md` (NEW)
+1. `stellar-lend/contracts/lending/src/lib.rs` (UPDATED)
+2. `stellar-lend/contracts/lending/src/math.rs` (UPDATED)
+3. `stellar-lend/contracts/lending/src/rounding_drift_test.rs` (NEW)
+4. `stellar-lend/contracts/lending/tests/interest_drift_regression_test.rs` (NEW)
+5. `stellar-lend/docs/INTEREST_ROUNDING_FIX.md` (NEW)
 
 ## References
 
