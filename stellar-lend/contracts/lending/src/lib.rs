@@ -17,8 +17,8 @@ mod interest_drift_regression_test;
 mod rounding_drift_test;
 
 use debt::{
-    borrow_amount, effective_debt, load_debt, repay_amount, save_debt, DebtPosition,
-    DEFAULT_APR_BPS,
+    borrow_amount, effective_debt, load_debt, repay_amount, save_debt, settle_accrual,
+    DebtPosition, DEFAULT_APR_BPS,
 };
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -454,8 +454,15 @@ impl LendingContract {
 
         let collateral: i128 = env.storage().persistent().get(&col_key).unwrap_or(0);
         let position = load_debt(&env, &borrower);
-        let debt = effective_debt(&position, env.ledger().timestamp(), DEFAULT_APR_BPS)
-            .unwrap_or(position.principal);
+        let now = env.ledger().timestamp();
+        // Settle the borrower's debt once and reuse the settled principal for
+        // the health-factor check, close-factor cap, and final debt write.
+        let settled_position =
+            settle_accrual(&position, now, DEFAULT_APR_BPS).unwrap_or(DebtPosition {
+                principal: position.principal,
+                last_update: now,
+            });
+        let debt = settled_position.principal;
 
         if debt == 0 {
             return Err(LendingError::PositionHealthy);
@@ -498,10 +505,9 @@ impl LendingContract {
         let new_debt = debt.saturating_sub(actual_repay);
         let new_col = collateral.saturating_sub(final_seized);
 
-        let now = env.ledger().timestamp();
         let updated_position = DebtPosition {
             principal: new_debt,
-            last_update: now,
+            last_update: settled_position.last_update,
         };
         save_debt(&env, &borrower, &updated_position);
         env.storage().persistent().set(&col_key, &new_col);
