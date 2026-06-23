@@ -901,32 +901,100 @@ fn check_emergency_status(env: &Env, action: ProtocolAction) {
     }
 }
 
-fn current_borrow_rate(env: &Env) -> i128 {
-    let params = env
-        .storage()
-        .instance()
-        .get::<DataKey, rate_model::RateParams>(&DataKey::RateParams);
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RateSnapshot {
+    total_debt: i128,
+    total_supply: i128,
+    params: Option<rate_model::RateParams>,
+}
 
-    match params {
+fn load_rate_snapshot(env: &Env) -> RateSnapshot {
+    let storage = env.storage();
+    let persistent = storage.persistent();
+    let instance = storage.instance();
+
+    RateSnapshot {
+        total_debt: persistent.get(&DataKey::TotalDebt).unwrap_or(0),
+        total_supply: persistent.get(&DataKey::TotalDeposits).unwrap_or(0),
+        params: instance.get(&DataKey::RateParams),
+    }
+}
+
+fn current_borrow_rate(env: &Env) -> i128 {
+    let snapshot = load_rate_snapshot(env);
+
+    match snapshot.params {
         Some(p) => {
-            let total_debt: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::TotalDebt)
-                .unwrap_or(0);
-            let total_supply: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::TotalDeposits)
-                .unwrap_or(0);
-            let utilization_bps = if total_supply > 0 {
-                total_debt.saturating_mul(10_000) / total_supply
+            let utilization_bps = if snapshot.total_supply > 0 {
+                snapshot.total_debt.saturating_mul(10_000) / snapshot.total_supply
             } else {
                 0
             };
             rate_model::compute_borrow_rate(utilization_bps, &p)
         }
         None => DEFAULT_APR_BPS,
+    }
+}
+
+#[cfg(test)]
+mod borrow_rate_snapshot_test {
+    use super::*;
+    use soroban_sdk::Env;
+
+    fn with_contract<R>(env: &Env, f: impl FnOnce() -> R) -> R {
+        let contract_id = env.register(LendingContract, ());
+        env.as_contract(&contract_id, f)
+    }
+
+    #[test]
+    fn missing_rate_params_returns_legacy_default_without_aggregate_dependency() {
+        let env = Env::default();
+        with_contract(&env, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::TotalDebt, &8_000i128);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TotalDeposits, &10_000i128);
+
+            assert_eq!(current_borrow_rate(&env), DEFAULT_APR_BPS);
+        });
+    }
+
+    #[test]
+    fn configured_params_use_zero_utilization_when_supply_is_zero() {
+        let env = Env::default();
+        with_contract(&env, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::RateParams, &rate_model::RateParams::default());
+            env.storage()
+                .persistent()
+                .set(&DataKey::TotalDebt, &5_000i128);
+
+            assert_eq!(current_borrow_rate(&env), 100);
+        });
+    }
+
+    #[test]
+    fn configured_params_use_single_snapshot_of_debt_and_supply() {
+        let env = Env::default();
+        with_contract(&env, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::RateParams, &rate_model::RateParams::default());
+            env.storage()
+                .persistent()
+                .set(&DataKey::TotalDebt, &8_000i128);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TotalDeposits, &10_000i128);
+
+            let snapshot = load_rate_snapshot(&env);
+            assert_eq!(snapshot.total_debt, 8_000);
+            assert_eq!(snapshot.total_supply, 10_000);
+            assert_eq!(current_borrow_rate(&env), 1_700);
+        });
     }
 }
 

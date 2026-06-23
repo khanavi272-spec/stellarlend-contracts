@@ -7,6 +7,10 @@ The performance baselines defined in `test_performance.rs` are established by ob
 
 This bounded range approach replaces the old `* 2` multiplier to tightly bound the functions and prevent unintended algorithmic regressions.
 
+## Borrow Rate Storage Reads
+
+`current_borrow_rate` is a hot helper for borrow, repay, liquidation, and health-factor paths. It must load `TotalDebt`, `TotalDeposits`, and `RateParams` once through `load_rate_snapshot`, then perform all utilization and kink-rate math from that snapshot. This keeps storage reads bounded and prevents future edits from scattering duplicate aggregate loads through nested branches.
+
 ## Updating Baselines
 If a new feature is legitimately added that increases the gas ceiling of a core operation:
 1. Run the test suite and observe the exact overflow value.
