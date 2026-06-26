@@ -215,21 +215,16 @@ The project maintains an extensive test suite with **>95% coverage target** for 
 ```
 stellarlend-contracts/
 ├── README.md                          # Root project overview
-├── PROJECT_SUMMARY.md                 # This file
-├── ci-doc.md                          # CI pipeline documentation
-├── DELIVERABLE.md                     # Contract initialization test deliverable
-├── IMPLEMENTATION_SUMMARY.md          # Issue #482 pause test implementation
-├── TEST_SUITE_SUMMARY.md              # Initialization test suite summary
-├── QUICK_REFERENCE.md                 # Quick lookup guide
-├── SECURITY.md / SECURITY_NOTES.md    # Security documentation
-├── LIFECYCLE_SECURITY_NOTES.md        # Emergency lifecycle security
-├── PERFORMANCE_REGRESSION_TESTING.md  # Performance testing guide
-├── STRESS_TEST_DOCUMENTATION.md       # Stress test documentation
-├── UPGRADE_*.md                       # Upgrade safety docs
-├── CROSS_ASSET_LIQUIDATION_NOTES.md   # Cross-asset liquidation notes
-├── docs/
+├── CONTRIBUTORS.md                    # Contributors
+├── local-ci.sh                        # Local CI reproduction script
+├── docs/                              # Canonical documentation (see INDEX.md)
+│   ├── INDEX.md                      # Documentation entry point
 │   ├── glossary.md
-│   └── governance_audit.md
+│   ├── CI_OVERVIEW.md
+│   ├── PAUSE_SECURITY_ANALYSIS.md
+│   ├── PROJECT_SUMMARY.md
+│   ├── VIEW_SCHEMA_VERSIONING_POLICY.md
+│   └── ...                           # 30+ canonical doc files
 │
 └── stellar-lend/
     ├── Cargo.toml
