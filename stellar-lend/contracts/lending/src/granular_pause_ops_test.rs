@@ -7,7 +7,13 @@ use soroban_sdk::{
     Address, Env, IntoVal,
 };
 
-fn setup() -> (Env, LendingContractClient<'static>, Address, Address, Address) {
+fn setup() -> (
+    Env,
+    LendingContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     let id = env.register(LendingContract, ());
@@ -38,11 +44,7 @@ fn setup_with_guardian() -> (
     (env, client, id, admin, guardian, user)
 }
 
-fn pause(
-    _env: &Env,
-    client: &LendingContractClient<'static>,
-    operation: PauseType,
-) {
+fn pause(_env: &Env, client: &LendingContractClient<'static>, operation: PauseType) {
     let ttl = 5u32;
     client.set_pause(&operation, &true, &ttl);
 }
