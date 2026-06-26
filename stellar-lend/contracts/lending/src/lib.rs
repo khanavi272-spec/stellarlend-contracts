@@ -46,6 +46,8 @@ mod liquidate_rounding_test;
 #[cfg(test)]
 mod flash_utilization_test;
 #[cfg(test)]
+mod liquidation_bonus_proptest;
+#[cfg(test)]
 mod rounding_drift_test;
 #[cfg(test)]
 mod rate_cache_test;
