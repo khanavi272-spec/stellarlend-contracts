@@ -36,6 +36,8 @@ mod interest_drift_regression_test;
 #[cfg(test)]
 mod borrow_health_factor_test;
 #[cfg(test)]
+mod liquidate_close_factor_test;
+#[cfg(test)]
 mod rounding_drift_test;
 #[cfg(test)]
 mod rate_cache_test;
