@@ -23,7 +23,9 @@
 //! | sequential_write_offs_both_succeed           | two successive write-offs both succeed           |
 //! | get_bad_debt_view_reflects_state             | view returns correct value before/after          |
 
-use crate::{BadDebtWrittenOffEvent, DataKey, LendingContract, LendingContractClient, LendingError};
+use crate::{
+    BadDebtWrittenOffEvent, DataKey, LendingContract, LendingContractClient, LendingError,
+};
 use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env, Event, IntoVal};
 
 // ---------------------------------------------------------------------------
@@ -46,9 +48,7 @@ fn setup() -> (Env, LendingContractClient<'static>, Address, Address) {
 /// write-off path so we can set up arbitrary initial states for testing.
 fn set_bad_debt(env: &Env, contract: &Address, amount: i128) {
     env.as_contract(contract, || {
-        env.storage()
-            .instance()
-            .set(&DataKey::BadDebt, &amount);
+        env.storage().instance().set(&DataKey::BadDebt, &amount);
     });
 }
 
@@ -286,9 +286,7 @@ fn write_off_unauthorized_rejected() {
 
     // Inject bad debt and deposits directly
     env2.as_contract(&id2, || {
-        env2.storage()
-            .instance()
-            .set(&DataKey::BadDebt, &500i128);
+        env2.storage().instance().set(&DataKey::BadDebt, &500i128);
         env2.storage()
             .persistent()
             .set(&DataKey::TotalDeposits, &500i128);
@@ -446,7 +444,7 @@ fn sequential_write_offs_both_succeed() {
     client.write_off_bad_debt(&500);
     assert_eq!(read_bad_debt(&env, &client.address), 500);
     assert_eq!(read_insurance_fund(&env, &client.address), 100); // 600 - 500
-    assert_eq!(read_total_deposits(&env, &client.address), 800);  // untouched
+    assert_eq!(read_total_deposits(&env, &client.address), 800); // untouched
 
     // Second write-off: clear remaining 500
     // insurance_used = min(500, 100) = 100

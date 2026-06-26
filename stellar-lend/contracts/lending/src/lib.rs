@@ -831,10 +831,7 @@ impl LendingContract {
     /// Bad debt accumulates when a liquidation cannot fully recover a borrow
     /// position. Governance clears it via [`write_off_bad_debt`].
     pub fn get_bad_debt(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::BadDebt)
-            .unwrap_or(0)
+        env.storage().instance().get(&DataKey::BadDebt).unwrap_or(0)
     }
 
     /// Return the current insurance fund balance.
@@ -871,9 +868,7 @@ impl LendingContract {
             .instance()
             .get(&DataKey::InsuranceFund)
             .unwrap_or(0);
-        let new_balance = current
-            .checked_add(amount)
-            .ok_or(LendingError::Overflow)?;
+        let new_balance = current.checked_add(amount).ok_or(LendingError::Overflow)?;
         env.storage()
             .instance()
             .set(&DataKey::InsuranceFund, &new_balance);
@@ -911,11 +906,7 @@ impl LendingContract {
         if amount <= 0 {
             return Err(LendingError::InvalidAmount);
         }
-        let bad_debt: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::BadDebt)
-            .unwrap_or(0);
+        let bad_debt: i128 = env.storage().instance().get(&DataKey::BadDebt).unwrap_or(0);
         if bad_debt == 0 {
             return Err(LendingError::NoBadDebt);
         }
@@ -967,9 +958,7 @@ impl LendingContract {
             .ok_or(LendingError::Overflow)?;
 
         // --- Update bad debt ---
-        let new_bad_debt = bad_debt
-            .checked_sub(amount)
-            .ok_or(LendingError::Overflow)?;
+        let new_bad_debt = bad_debt.checked_sub(amount).ok_or(LendingError::Overflow)?;
 
         // --- Effects: persist all state changes atomically ---
         env.storage()
