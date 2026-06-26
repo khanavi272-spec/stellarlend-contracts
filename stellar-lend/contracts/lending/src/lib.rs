@@ -38,6 +38,8 @@ mod borrow_health_factor_test;
 #[cfg(test)]
 mod liquidate_close_factor_test;
 #[cfg(test)]
+mod oracle_staleness_test;
+#[cfg(test)]
 mod rounding_drift_test;
 #[cfg(test)]
 mod rate_cache_test;
@@ -87,6 +89,8 @@ pub enum DataKey {
     PendingAdmin,
     OraclePubKey,
     OraclePrice(Address),
+    ValuationCollateralAsset,
+    ValuationDebtAsset,
     EmergencyState,
     Guardian,
     PauseState(PauseType),
@@ -600,6 +604,7 @@ impl LendingContract {
         if amount <= 0 {
             return Err(LendingError::InvalidAmount);
         }
+        require_fresh_valuation_prices(&env)?;
         user.require_auth();
         let min_borrow = Self::get_min_borrow(env.clone());
         if amount < min_borrow {
@@ -652,6 +657,7 @@ impl LendingContract {
             return Err(LendingError::SelfLiquidation);
         }
 
+        require_fresh_valuation_prices(&env)?;
         let col_key = DataKey::Collateral(borrower.clone());
 
         let collateral: i128 = env.storage().persistent().get(&col_key).unwrap_or(0);
@@ -1412,6 +1418,32 @@ fn assert_borrow_solvent(
 
 fn current_borrow_rate(env: &Env) -> i128 {
     cached_borrow_rate(env)
+}
+
+fn require_fresh_valuation_prices(env: &Env) -> Result<(), LendingError> {
+    require_fresh_price_for_key(env, &DataKey::ValuationCollateralAsset)?;
+    require_fresh_price_for_key(env, &DataKey::ValuationDebtAsset)?;
+    Ok(())
+}
+
+fn require_fresh_price_for_key(env: &Env, asset_key: &DataKey) -> Result<(), LendingError> {
+    let Some(asset) = env.storage().instance().get::<_, Address>(asset_key) else {
+        return Ok(());
+    };
+
+    let record = env
+        .storage()
+        .persistent()
+        .get::<_, PriceRecord>(&DataKey::OraclePrice(asset))
+        .ok_or(LendingError::StaleOracleTimestamp)?;
+
+    let now = env.ledger().timestamp();
+    if record.timestamp > now || now > record.timestamp.saturating_add(DEFAULT_ORACLE_MAX_AGE_SECS)
+    {
+        return Err(LendingError::StaleOracleTimestamp);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
