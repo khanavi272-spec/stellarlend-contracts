@@ -21,6 +21,8 @@ mod health_factor_edge_test;
 mod interest_drift_regression_test;
 #[cfg(test)]
 mod rounding_drift_test;
+#[cfg(test)]
+mod oracle_payload_binding_test;
 
 use debt::{
     borrow_amount, effective_debt, load_debt, repay_amount, save_debt, settle_accrual,
@@ -233,15 +235,36 @@ impl LendingContract {
         env.storage().persistent().get(&DataKey::OraclePrice(asset))
     }
 
-    fn oracle_price_signature_payload(
+    /// Build the ed25519 signing payload for a price update.
+    ///
+    /// Framing: each variable-length field is preceded by its 4-byte big-endian
+    /// length so that no two distinct `(asset, price, timestamp)` tuples can
+    /// produce the same byte string (field-confusion / splice forgery impossible).
+    ///
+    /// Layout:
+    /// ```text
+    /// ORACLE_SIGNATURE_DOMAIN   (fixed 17 bytes — no length prefix needed)
+    /// u32_be(len(asset_xdr))    (4 bytes)
+    /// asset_xdr                 (variable)
+    /// price_i128_be             (16 bytes fixed — no length prefix needed)
+    /// timestamp_u64_be          (8 bytes  fixed — no length prefix needed)
+    /// ```
+    pub(crate) fn oracle_price_signature_payload(
         env: &Env,
         asset: &Address,
         price: i128,
         timestamp: u64,
     ) -> Bytes {
+        let asset_xdr = asset.to_xdr(env);
+        let asset_len = asset_xdr.len(); // u32
+
         let mut payload = Bytes::new(env);
+        // Domain separator (fixed length — no prefix required)
         payload.append(&Bytes::from_slice(env, ORACLE_SIGNATURE_DOMAIN));
-        payload.append(&asset.to_xdr(env));
+        // Length-prefixed asset XDR (variable length — prefix prevents splice)
+        payload.append(&Bytes::from_slice(env, &asset_len.to_be_bytes()));
+        payload.append(&asset_xdr);
+        // Fixed-width fields need no length prefix
         payload.append(&Bytes::from_slice(env, &price.to_be_bytes()));
         payload.append(&Bytes::from_slice(env, &timestamp.to_be_bytes()));
         payload
