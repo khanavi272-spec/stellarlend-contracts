@@ -544,31 +544,30 @@ impl LendingContract {
             .and_then(|v| v.checked_div(10000))
             .ok_or(LendingError::Overflow)?;
 
-        let mut final_seized = seized_collateral;
-        if seized_collateral > collateral {
+        let mut _final_seized = seized_collateral;
+        let available_collateral = collateral;
+        if seized_collateral > available_collateral {
             let shortfall = seized_collateral
-                .checked_sub(collateral)
+                .checked_sub(available_collateral)
                 .ok_or(LendingError::Overflow)?;
             let current_bad_debt: i128 = env
                 .storage()
-                .persistent()
+                .instance()
                 .get(&DataKey::BadDebt)
                 .unwrap_or(0i128);
             let new_bad_debt = current_bad_debt
                 .checked_add(shortfall)
                 .ok_or(LendingError::Overflow)?;
-            env.storage()
-                .persistent()
-                .set(&DataKey::BadDebt, &new_bad_debt);
+            env.storage().instance().set(&DataKey::BadDebt, &new_bad_debt);
             env.events().publish(
-                (symbol_short!("bad_debt"), borrower.clone()),
-                (shortfall, new_bad_debt),
+                (Symbol::new(&env, "bad_debt"), borrower.clone()),
+                shortfall,
             );
-            final_seized = collateral;
+            _final_seized = available_collateral;
         }
 
         let new_debt = debt.saturating_sub(actual_repay);
-        let new_col = collateral.saturating_sub(final_seized);
+        let new_col = collateral.saturating_sub(_final_seized);
 
         let updated_position = DebtPosition {
             principal: new_debt,

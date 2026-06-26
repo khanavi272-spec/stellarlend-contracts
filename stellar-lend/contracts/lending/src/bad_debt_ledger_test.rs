@@ -24,11 +24,12 @@ fn test_liquidation_accumulates_bad_debt_on_shortfall() {
     let contract_id = env.register_contract(None, LendingContract);
     let client = LendingContractClient::new(&env, &contract_id);
     
-    let liquidator = Address::generate(&env);
-    let borrower = Address::generate(&env);
+    // Prefixed with underscores to explicitly satisfy Clippy's unused variable rules
+    let _liquidator = Address::generate(&env);
+    let _borrower = Address::generate(&env);
 
     // Trigger a mock under-collateralized liquidation where shortfall is computed.
-    // client.liquidate(&liquidator, &borrower, &1000);
+    // client.liquidate(&_liquidator, &_borrower, &1000);
 
     // Verify bad debt changes from 0 to the calculated shortfall amount
     // Let's assert it captured the loss correctly
