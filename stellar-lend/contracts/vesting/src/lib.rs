@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+#[cfg(test)]
+mod revoke_split_test;use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {
