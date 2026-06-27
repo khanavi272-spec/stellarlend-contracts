@@ -31,7 +31,15 @@ fn setup() -> (
     let debt_asset = Address::generate(&env);
     let collateral_asset = Address::generate(&env);
     client.initialize(&admin);
-    (env, client, id, user, liquidator, debt_asset, collateral_asset)
+    (
+        env,
+        client,
+        id,
+        user,
+        liquidator,
+        debt_asset,
+        collateral_asset,
+    )
 }
 
 /// Set up a position that is unhealthy: hf = col*8000/debt < 10000.

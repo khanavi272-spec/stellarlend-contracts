@@ -1,5 +1,9 @@
 use crate::{LendingContract, LendingContractClient, PauseType};
-use soroban_sdk::{contract, contractimpl, testutils::{Address as _, Ledger}, vec, Address, Bytes, Env};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{Address as _, Ledger},
+    vec, Address, Bytes, Env,
+};
 
 fn setup() -> (
     Env,

@@ -62,7 +62,13 @@ fn run_case(collateral: i128, debt: i128, amount: i128) -> Outcome {
         );
     });
 
-    match client.try_liquidate(&liquidator, &borrower, &debt_asset, &collateral_asset, &amount) {
+    match client.try_liquidate(
+        &liquidator,
+        &borrower,
+        &debt_asset,
+        &collateral_asset,
+        &amount,
+    ) {
         Err(Err(invoke)) => panic!("liquidate trapped (host error): {invoke:?}"),
         Ok(Err(conv)) => panic!("return-value conversion error: {conv:?}"),
 

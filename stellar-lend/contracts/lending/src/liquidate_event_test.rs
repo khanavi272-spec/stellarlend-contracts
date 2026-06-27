@@ -24,7 +24,15 @@ fn setup_liquidatable() -> (
     let debt_asset = Address::generate(&env);
     let collateral_asset = Address::generate(&env);
     client.initialize(&admin);
-    (env, client, cid, user, liquidator, debt_asset, collateral_asset)
+    (
+        env,
+        client,
+        cid,
+        user,
+        liquidator,
+        debt_asset,
+        collateral_asset,
+    )
 }
 
 // ─── Standard liquidation event ──────────────────────────────────────────────

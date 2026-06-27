@@ -180,7 +180,10 @@ fn liquidate_accepts_price_exactly_at_max_age() {
     client.borrow(&user, &90);
     advance_time(&env, DEFAULT_ORACLE_MAX_AGE_SECS);
 
-    assert_eq!(client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &45), 45);
+    assert_eq!(
+        client.liquidate(&liquidator, &user, &debt_asset, &collateral_asset, &45),
+        45
+    );
 }
 
 #[test]

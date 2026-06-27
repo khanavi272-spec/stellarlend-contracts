@@ -22,7 +22,15 @@ fn setup() -> (
     let debt_asset = Address::generate(&env);
     let collateral_asset = Address::generate(&env);
     client.initialize(&admin);
-    (env, client, borrower, liquidator, admin, debt_asset, collateral_asset)
+    (
+        env,
+        client,
+        borrower,
+        liquidator,
+        admin,
+        debt_asset,
+        collateral_asset,
+    )
 }
 
 #[test]
@@ -42,7 +50,13 @@ fn self_liquidation_is_rejected_before_any_state_change() {
     assert_eq!(client.get_position(&borrower).debt, before_debt);
 
     let other_liquidator = Address::generate(&env);
-    let success = client.try_liquidate(&other_liquidator, &borrower, &debt_asset, &collateral_asset, &100);
+    let success = client.try_liquidate(
+        &other_liquidator,
+        &borrower,
+        &debt_asset,
+        &collateral_asset,
+        &100,
+    );
     assert!(
         success.is_ok(),
         "distinct-address liquidation should still succeed"
