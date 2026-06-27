@@ -122,6 +122,8 @@ pub enum DataKey {
     PendingAdmin,
     OraclePubKey,
     OraclePrice(Address),
+    PriceMin(Address),
+    PriceMax(Address),
     ValuationCollateralAsset,
     ValuationDebtAsset,
     EmergencyState,
@@ -162,6 +164,14 @@ pub struct PauseStateChangedEvent {
     pub operation: PauseType,
     pub old_state: PauseState,
     pub new_state: PauseState,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PriceBoundsSetEvent {
+    pub asset: Address,
+    pub min_price: i128,
+    pub max_price: i128,
 }
 
 #[contractevent]
@@ -255,6 +265,7 @@ pub enum LendingError {
     IsolationCeilingExceeded = 2009,
     InvalidIsolationCeiling = 2010,
     InvalidOracleSignature = 5001,
+    PriceOutOfBounds = 3004,
     StaleOracleTimestamp = 5002,
     OraclePubkeyNotSet = 5003,
     /// The asset has not been configured via set_asset_params.
@@ -439,6 +450,19 @@ impl LendingContract {
         if price <= 0 {
             return Err(LendingError::InvalidAmount);
         }
+        // Retrieve optional bounds
+        let min_opt: Option<i128> = env.storage().persistent().get(&DataKey::PriceMin(asset));
+        let max_opt: Option<i128> = env.storage().persistent().get(&DataKey::PriceMax(asset));
+        if let Some(min) = min_opt {
+            if price < min {
+                return Err(LendingError::PriceOutOfBounds);
+            }
+        }
+        if let Some(max) = max_opt {
+            if price > max {
+                return Err(LendingError::PriceOutOfBounds);
+            }
+        }
 
         let now = env.ledger().timestamp();
         if timestamp > now || now > timestamp.saturating_add(DEFAULT_ORACLE_MAX_AGE_SECS) {
@@ -527,6 +551,31 @@ impl LendingContract {
             .instance()
             .set(&DataKey::MaxFlashUtilizationBps, &max_flash_bps);
         Ok(())
+    }
+
+    /// Set per‑asset price bounds (admin‑only).
+    /// `min_price` must be > 0 and less than `max_price`.
+    pub fn set_price_bounds(
+        env: Env,
+        asset: Address,
+        min_price: i128,
+        max_price: i128,
+    ) -> Result<(), LendingError> {
+        assert_admin(&env);
+        if min_price <= 0 || max_price <= 0 || min_price >= max_price {
+            return Err(LendingError::InvalidAmount);
+        }
+        env.storage().persistent().set(&DataKey::PriceMin(asset), &min_price);
+        env.storage().persistent().set(&DataKey::PriceMax(asset), &max_price);
+        PriceBoundsSetEvent { asset, min_price, max_price }.publish(&env);
+        Ok(())
+    }
+
+    /// Retrieve price bounds for an asset. Returns `(Option<min>, Option<max>)`.
+    pub fn get_price_bounds(env: Env, asset: Address) -> (Option<i128>, Option<i128>) {
+        let min = env.storage().persistent().get(&DataKey::PriceMin(asset));
+        let max = env.storage().persistent().get(&DataKey::PriceMax(asset));
+        (min, max)
     }
 
     /// Return the configured maximum flash-loan utilization ratio in basis points.
