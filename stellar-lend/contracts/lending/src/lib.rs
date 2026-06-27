@@ -16,6 +16,8 @@ mod admin_setters_dedupe_test;
 #[cfg(test)]
 mod cross_asset_test;
 #[cfg(test)]
+mod cross_asset_e2e_test;
+#[cfg(test)]
 mod bad_debt_write_off_test;
 #[cfg(test)]
 mod deposit_accounting_test;
