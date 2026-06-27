@@ -81,8 +81,8 @@ use debt::{
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address,
-    Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
+    Env, IntoVal, Symbol, Val, Vec,
 };
 
 const PERSISTENT_TTL_LEDGERS: u32 = 1_000_000;
