@@ -60,6 +60,8 @@ mod oracle_payload_binding_test;
 #[cfg(test)]
 mod liquidate_checked_sub_test;
 #[cfg(test)]
+mod liquidate_accrual_test;
+#[cfg(test)]
 mod self_liquidation_test;
 #[cfg(test)]
 mod property_invariants_test;
@@ -1037,13 +1039,15 @@ impl LendingContract {
         let collateral: i128 = env.storage().persistent().get(&col_key).unwrap_or(0);
         let position = load_debt(&env, &borrower);
         let now = env.ledger().timestamp();
-        // Settle the borrower's debt once and reuse the settled principal for
-        // the health-factor check, close-factor cap, and final debt write.
-        let settled_position =
-            settle_accrual(&position, now, DEFAULT_APR_BPS).unwrap_or(DebtPosition {
-                principal: position.principal,
-                last_update: now,
-            });
+
+        /// Accrue and capitalize pending interest into the borrower's principal debt position
+        /// and persist the updated position before performing any liquidation checks or debt reduction.
+        /// This ensures the health factor calculation, close factor cap, and final repayment operate
+        /// on a fully-settled, capitalized principal, mirroring the standard non-liquidation repay path.
+        let settled_position = settle_accrual(&position, now, DEFAULT_APR_BPS)
+            .map_err(|_| LendingError::Overflow)?;
+        save_debt(&env, &borrower, &settled_position);
+
         let debt = settled_position.principal;
 
         if debt == 0 {
